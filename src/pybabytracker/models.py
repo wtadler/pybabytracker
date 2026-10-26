@@ -15,7 +15,7 @@ import json
 import logging
 from dataclasses import dataclass, field, fields
 from datetime import datetime
-from typing import Any, ClassVar, Self
+from typing import Any, ClassVar, NamedTuple, Self
 
 from .exceptions import TransactionDecodeError
 from .times import format_time, parse_time
@@ -28,6 +28,90 @@ _LOGGER = logging.getLogger(__name__)
 
 _TIME = "time"
 _BABY = "baby"
+_VOLUME = "volume"
+
+UNIT_OUNCES = "oz"
+UNIT_MILLILITERS = "ml"
+
+
+class Volume(NamedTuple):
+    """An amount of liquid: a number and its unit, ``"oz"`` or ``"ml"``."""
+
+    value: float
+    unit: str
+
+
+class VolumeMeasure:
+    """A ``VolumeMeasure`` payload object: ``{"BCObjectType", "englishMeasure", "value"}``.
+
+    The raw object is kept as is, so unknown keys and odd values survive a round trip.
+    ``englishMeasure`` "true" means ounces; anything else, or no key, means milliliters. That is an
+    assumption: only "true" has been observed in captures.
+    """
+
+    def __init__(
+        self,
+        value: Any = None,
+        english_measure: str | None = "true",
+        *,
+        raw: dict[str, Any] | None = None,
+    ) -> None:
+        if raw is not None:
+            self.raw = copy.deepcopy(raw)
+            return
+        self.raw = {"BCObjectType": "VolumeMeasure"}
+        if english_measure is not None:
+            self.raw["englishMeasure"] = english_measure
+        self.raw["value"] = value
+
+    @property
+    def value(self) -> Any:
+        return self.raw.get("value")
+
+    @property
+    def english_measure(self) -> Any:
+        return self.raw.get("englishMeasure")
+
+    @property
+    def volume(self) -> Volume | None:
+        """The number and unit, or ``None`` when the value isn't a number."""
+        number = _number(self.value)
+        if number is None:
+            return None
+        unit = UNIT_OUNCES if self.english_measure == "true" else UNIT_MILLILITERS
+        return Volume(number, unit)
+
+    def to_payload(self) -> dict[str, Any]:
+        return copy.deepcopy(self.raw)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, VolumeMeasure) and self.raw == other.raw
+
+    __hash__ = None  # type: ignore[assignment]
+
+    def __repr__(self) -> str:
+        return f"VolumeMeasure({self.raw!r})"
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value)
+
+
+def _volume_of(amount: Any, is_english_scale: Any) -> Volume | None:
+    """Resolve a volume field. A plain number (older app versions) takes its unit from the
+    record's ``isEnglishScale`` when that is 0 or 1, and has no unit otherwise."""
+    if isinstance(amount, VolumeMeasure):
+        return amount.volume
+    number = _number(amount)
+    if number is None or isinstance(is_english_scale, bool):
+        return None
+    if is_english_scale == 1:
+        return Volume(number, UNIT_OUNCES)
+    if is_english_scale == 0:
+        return Volume(number, UNIT_MILLILITERS)
+    return None
 
 
 def _key(name: str, codec: str | None = None) -> Any:
@@ -54,6 +138,8 @@ class Record:
     extra: dict[str, Any] = field(default_factory=dict)
     # Known payload keys that were present when decoded, so absent and null stay distinct.
     present: frozenset[str] = field(default_factory=frozenset, repr=False, compare=False)
+    # The payload's key order when decoded, so re-encoding gives the same bytes.
+    key_order: tuple[str, ...] = field(default=(), repr=False, compare=False)
 
     @property
     def record_type(self) -> str:
@@ -86,7 +172,7 @@ class Record:
         if not isinstance(kwargs.get("object_id"), str):
             raise TransactionDecodeError("payload has no string objectID")
         extra = {k: copy.deepcopy(v) for k, v in payload.items() if k not in known}
-        return cls(**kwargs, extra=extra, present=frozenset(present))
+        return cls(**kwargs, extra=extra, present=frozenset(present), key_order=tuple(payload))
 
     def to_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {"BCObjectType": self.object_type}
@@ -99,7 +185,7 @@ class Record:
                 continue
             payload[key] = _encode_value(f.metadata.get("codec"), value)
         payload.update(copy.deepcopy(self.extra))
-        return payload
+        return _in_order(payload, self.key_order)
 
     def describe(self) -> dict[str, Any]:
         """The type-specific fields that are set, by Python field name."""
@@ -115,6 +201,15 @@ class Record:
 _BASE_FIELD_NAMES = {f.name for f in fields(Record)}
 
 
+def _in_order(payload: dict[str, Any], order: tuple[str, ...]) -> dict[str, Any]:
+    """``payload`` with the keys in ``order`` first, then any others in their own order."""
+    if not order:
+        return payload
+    ordered = {key: payload[key] for key in order if key in payload}
+    ordered.update((key, value) for key, value in payload.items() if key not in ordered)
+    return ordered
+
+
 def _decode_value(codec: str | None, value: Any) -> Any:
     if value is None:
         return None
@@ -126,6 +221,8 @@ def _decode_value(codec: str | None, value: Any) -> Any:
         if not isinstance(value, dict):
             raise TypeError("baby must be an object")
         return Baby.from_payload(value)
+    if codec == _VOLUME and isinstance(value, dict):
+        return VolumeMeasure(raw=value)
     return copy.deepcopy(value)
 
 
@@ -134,7 +231,7 @@ def _encode_value(codec: str | None, value: Any) -> Any:
         return None
     if codec == _TIME:
         return format_time(value)
-    if codec == _BABY:
+    if codec == _BABY or isinstance(value, VolumeMeasure):
         return value.to_payload()
     return copy.deepcopy(value)
 
@@ -149,6 +246,11 @@ def _register[R: type[Record]](cls: R) -> R:
 
 def _opt(name: str) -> Any:
     return _key(name)
+
+
+def _vol(name: str) -> Any:
+    """A volume field: a ``VolumeMeasure`` from the sync service, or a plain number."""
+    return _key(name, _VOLUME)
 
 
 @_register
@@ -186,6 +288,9 @@ class Nursing(Record):
     left_duration: int | None = _opt("leftDuration")
     right_duration: int | None = _opt("rightDuration")
     both_duration: int | None = _opt("bothDuration")
+    is_detailed: str | None = _opt("isDetailed")
+    state: int | None = _opt("state")
+    pair_session_state: int | None = _opt("pairSessionState")
 
 
 @_register
@@ -194,8 +299,12 @@ class Formula(Record):
     object_type: ClassVar[str] = "Formula"
 
     desc_id: str | None = _opt("descID")
-    amount: float | None = _opt("amount")
+    amount: VolumeMeasure | float | None = _vol("amount")
     is_english_scale: int | None = _opt("isEnglishScale")
+
+    @property
+    def volume(self) -> Volume | None:
+        return _volume_of(self.amount, self.is_english_scale)
 
 
 @_register
@@ -204,9 +313,13 @@ class Pumped(Record):
     object_type: ClassVar[str] = "Pumped"
 
     desc_id: str | None = _opt("descID")
-    amount: float | None = _opt("amount")
+    amount: VolumeMeasure | float | None = _vol("amount")
     is_english_scale: int | None = _opt("isEnglishScale")
     pump_id: str | None = _opt("pumpID")
+
+    @property
+    def volume(self) -> Volume | None:
+        return _volume_of(self.amount, self.is_english_scale)
 
 
 @_register
@@ -228,14 +341,26 @@ class Pump(Record):
 
     finish_side: int | None = _opt("finishSide")
     sides: int | None = _opt("sides")
-    amount: float | None = _opt("amount")
+    amount: VolumeMeasure | float | None = _vol("amount")
     is_english_scale: int | None = _opt("isEnglishScale")
     label: str | None = _opt("label")
     pumped_id: str | None = _opt("pumpedID")
-    left_amount: float | None = _opt("leftAmount")
-    right_amount: float | None = _opt("rightAmount")
+    left_amount: VolumeMeasure | float | None = _vol("leftAmount")
+    right_amount: VolumeMeasure | float | None = _vol("rightAmount")
     left_duration: int | None = _opt("leftDuration")
     right_duration: int | None = _opt("rightDuration")
+
+    @property
+    def volume(self) -> Volume | None:
+        return _volume_of(self.amount, self.is_english_scale)
+
+    @property
+    def left_volume(self) -> Volume | None:
+        return _volume_of(self.left_amount, self.is_english_scale)
+
+    @property
+    def right_volume(self) -> Volume | None:
+        return _volume_of(self.right_amount, self.is_english_scale)
 
 
 @_register
@@ -246,6 +371,11 @@ class Sleep(Record):
     duration: int | None = _opt("duration")
     location_id: str | None = _opt("locationID")
     desc_id: str | None = _opt("descID")
+
+    @property
+    def is_running(self) -> bool:
+        """Whether the sleep timer is still going: the app posts a duration of 0 at the start."""
+        return self.duration == 0
 
 
 @_register
