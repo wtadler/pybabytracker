@@ -309,7 +309,10 @@ def test_unknown_extra_keys_survive_the_round_trip(type_name: str) -> None:
     payload = payload_for(type_name, futureField={"a": [1, 2, None]}, anotherNew="x")
     record = decode_payload(payload)
     assert type(record) is TYPED[type_name]
-    assert record.extra == {"futureField": {"a": [1, 2, None]}, "anotherNew": "x"}
+    expected = {"futureField": {"a": [1, 2, None]}, "anotherNew": "x"}
+    if type_name == "Pump":
+        expected["baby"] = payload["baby"]  # a pump's baby is kept raw, never read
+    assert record.extra == expected
     assert record.to_payload() == payload
     again = decode_transaction(encode_transaction(record))
     assert again.to_payload() == payload
@@ -391,7 +394,7 @@ def test_all_captured_fixtures_replay_in_one_log() -> None:
     result = engine.apply(DEVICE, [raw(f) for f in FIXTURES])
     assert result.applied == len(FIXTURES) and result.skipped == 0
     kinds = sorted(type(r).__name__ for r in engine.records.values())
-    assert kinds == ["Diaper", "Nursing", "Pump", "Pumped", "Sleep"]
+    assert kinds == ["Diaper", "Nursing", "Pump", "Pump", "Pumped", "Sleep"]
     assert FORMULA_ID not in engine.records
     for record in engine.records.values():
         assert not isinstance(record, UnknownRecord)

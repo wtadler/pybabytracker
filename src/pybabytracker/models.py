@@ -344,8 +344,13 @@ class OtherFeed(Record):
 @_register
 @dataclass(kw_only=True)
 class Pump(Record):
+    """A pumping session. It belongs to the account, not a baby: the live service's pumps carry no
+    ``baby`` key. A pump that does carry one still decodes, and the key is kept in ``extra`` so
+    the round trip stays exact, but it is never read as the pump's baby."""
+
     object_type: ClassVar[str] = "Pump"
 
+    baby: Baby | None = field(default=None, init=False, repr=False)
     finish_side: int | None = _opt("finishSide")
     sides: int | None = _opt("sides")
     amount: VolumeMeasure | float | None = _vol("amount")

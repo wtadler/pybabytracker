@@ -74,7 +74,7 @@ key.
 | `add_pumped(client, baby_id, volume=, ...)` | `Pumped` | a bottle of pumped milk |
 | `add_nursing(client, baby_id, left_minutes=, right_minutes=, ...)` | `Nursing` | a finished session |
 | `add_sleep(client, baby_id, start=, end=, ...)` | `Sleep` | a finished sleep |
-| `add_pump(client, baby_id, left_volume=, right_volume=, ...)` | `Pump` | a pumping session |
+| `add_pump(client, amount=, ...)` or `add_pump(client, left_volume=, right_volume=, ...)` | `Pump` | a pumping session; belongs to the account, so no `baby_id` |
 
 - Volumes are `Volume(value, "oz")`, written as a `VolumeMeasure` with `englishMeasure` `"true"`,
   rounded to 2 decimals (an integer when whole). **Milliliter writes are refused** with a
@@ -91,8 +91,13 @@ key.
   progress. `end` must be after `start`, and a sleep can't be longer than 24 hours.
 - Nursing and pump minutes are whole numbers, at most 240 per side (a guard against seconds
   passed as minutes).
-- Pump: `amount` is the sum of the two sides; a side left out is written as 0 in the other's
-  unit, and both sides must use one unit. `sides` is written as 0, as captured.
+- Pump: a pump belongs to the account, not a baby, so it takes no `baby_id` and its payload has
+  no `baby` key, like the app's. Give the total as `amount`, or the side volumes (not both):
+  with only `amount` the payload has no per-side amounts, and with sides `amount` is their sum,
+  a side left out is written as 0 in the other's unit, and both sides must use one unit.
+  `sides` is written as 0, as captured. Babies are never derived from pumps, and a pump that
+  carries a `baby` still decodes (kept raw, not read). `engine.latest_pump()` is the newest pump
+  on the account; `latest_records(baby_id)` never includes pumps.
 
 ### Sleep timers
 

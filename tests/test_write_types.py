@@ -71,6 +71,15 @@ def comparable(payload: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in payload.items() if k not in IGNORED}
 
 
+async def write_named(
+    engine: SyncEngine, client: BabyTrackerClient, method: str, **kwargs: Any
+) -> Any:
+    """Call a write by name; a pump belongs to the account, so it takes no baby."""
+    if method == "add_pump":
+        return await engine.add_pump(client, **kwargs)
+    return await getattr(engine, method)(client, BABY_ID, **kwargs)
+
+
 def at(text: str) -> datetime:
     """A time from the capture's format, as an aware UTC datetime."""
     return datetime.strptime(text, "%Y-%m-%d %H:%M:%S %z")
@@ -107,7 +116,6 @@ async def write_pumped(engine: SyncEngine, client: BabyTrackerClient, extra: dic
 async def write_pump(engine: SyncEngine, client: BabyTrackerClient, extra: dict[str, Any]) -> Any:
     return await engine.add_pump(
         client,
-        BABY_ID,
         left_volume=Volume(2, "oz"),
         right_volume=Volume(5, "oz"),
         left_minutes=1,
@@ -198,7 +206,10 @@ async def test_each_new_type_fills_the_keys_a_write_owns(
     assert isinstance(record, record_type)
     assert payload["objectID"] == "ABAB0000-0000-4000-8000-000000000009"
     assert payload["note"] == "bottle note"
-    assert payload["baby"]["objectID"] == BABY_ID
+    if name == "pump":
+        assert "baby" not in payload  # a pump belongs to the account, not a baby
+    else:
+        assert payload["baby"]["objectID"] == BABY_ID
     assert before <= at(payload["timestamp"]) <= after
     assert engine.records[payload["objectID"]].to_payload() == payload
 
@@ -253,7 +264,7 @@ async def test_a_milliliter_write_is_refused_with_no_request(
     method, kwargs = call
 
     with pytest.raises(ValueError, match="metric volumes aren't supported"):
-        await getattr(engine, method)(client, BABY_ID, **kwargs)
+        await write_named(engine, client, method, **kwargs)
 
     assert fake_server.requests == []
 
@@ -292,7 +303,6 @@ async def test_every_written_volume_is_rounded_to_two_decimals(
     await engine.add_formula(client, BABY_ID, volume=Volume(0.1 + 0.2, "oz"))
     await engine.add_pump(
         client,
-        BABY_ID,
         left_volume=Volume(1.005, "oz"),
         right_volume=Volume(2.3333333, "oz"),
         left_minutes=5,
@@ -491,7 +501,6 @@ async def test_a_pumps_total_is_the_sum_of_its_sides(
 
     await engine.add_pump(
         client,
-        BABY_ID,
         left_volume=Volume(2.5, "oz"),
         right_volume=Volume(5, "oz"),
         left_minutes=10,
@@ -511,7 +520,7 @@ async def test_a_one_sided_pump_writes_zero_for_the_other_side_in_the_same_unit(
     engine = await ready(client, fake_server)
 
     await engine.add_pump(
-        client, BABY_ID, left_volume=Volume(6, "oz"), left_minutes=15, finish_side=SIDE_LEFT
+        client, left_volume=Volume(6, "oz"), left_minutes=15, finish_side=SIDE_LEFT
     )
 
     payload = posted(fake_server)
@@ -529,7 +538,7 @@ async def test_a_pump_decodes_back_to_the_volumes_written(
     engine = await ready(client, fake_server)
 
     record = await engine.add_pump(
-        client, BABY_ID, left_volume=Volume(3, "oz"), right_volume=Volume(4, "oz")
+        client, left_volume=Volume(3, "oz"), right_volume=Volume(4, "oz")
     )
 
     assert isinstance(record, Pump)
@@ -629,7 +638,7 @@ async def test_mixed_types_share_one_numbering_and_a_retry_of_another_type_is_re
     assert len(own_posts(fake_server)) == 3
 
 
-@pytest.mark.parametrize("name", ALL)
+@pytest.mark.parametrize("name", [n for n in ALL if n != "pump"])  # a pump has no baby
 async def test_a_new_type_for_an_unknown_baby_is_refused_without_a_post(
     name: str, client: BabyTrackerClient, fake_server: FakeSyncServer
 ) -> None:
@@ -637,7 +646,6 @@ async def test_a_new_type_for_an_unknown_baby_is_refused_without_a_post(
     by_name: dict[str, dict[str, Any]] = {
         "formula": {"volume": Volume(4, "oz")},
         "pumped": {"volume": Volume(4, "oz")},
-        "pump": {"left_volume": Volume(4, "oz"), "left_minutes": 5},
         "nursing": {"left_minutes": 5},
         "sleep": {
             "start": datetime(2026, 10, 26, 1, tzinfo=UTC),
@@ -722,7 +730,7 @@ async def test_bad_input_is_refused_with_no_request_at_all(
     method, kwargs = BAD_CALLS[case]
 
     with pytest.raises((ValueError, TypeError)):
-        await getattr(engine, method)(client, BABY_ID, **kwargs)
+        await write_named(engine, client, method, **kwargs)
 
     assert fake_server.requests == []
 
@@ -734,7 +742,7 @@ async def test_a_refused_write_does_not_use_up_a_number(
     engine = await ready(client, fake_server)
     method, kwargs = BAD_CALLS[case]
     with pytest.raises(ValueError):
-        await getattr(engine, method)(client, BABY_ID, **kwargs)
+        await write_named(engine, client, method, **kwargs)
 
     await write_formula(engine, client, {})
 
@@ -755,7 +763,7 @@ async def test_the_largest_allowed_duration_is_accepted(
 ) -> None:
     engine = await ready(client, fake_server)
 
-    await getattr(engine, method)(client, BABY_ID, **kwargs)
+    await write_named(engine, client, method, **kwargs)
 
     assert len(own_posts(fake_server)) == 1
 

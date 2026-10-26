@@ -395,8 +395,8 @@ class SyncEngine:
     async def add_pump(
         self,
         target: WriteTarget,
-        baby_id: str,
         *,
+        amount: Volume | None = None,
         left_volume: Volume | None = None,
         right_volume: Volume | None = None,
         left_minutes: int = 0,
@@ -407,12 +407,16 @@ class SyncEngine:
         note: str = "",
         object_id: str | None = None,
     ) -> Pump:
-        """Post a pumping session, with the volume of at least one side (one unit for both).
+        """Post a pumping session. A pump belongs to the account, so it takes no baby.
 
-        The total is the sum of the two sides; a side left out is written as 0. ``time`` is the
-        session's start (default now). ``finish_side`` defaults as in ``add_nursing``.
+        Give the total as ``amount``, or the volume of at least one side (one unit for both, not
+        mixed with ``amount``). With sides the total is their sum and a side left out is written
+        as 0; with only ``amount`` the payload has no per-side amounts, like the app's own
+        pump. ``time`` is the session's start (default now). ``finish_side`` defaults as in
+        ``add_nursing``.
         """
         draft = draft_pump(
+            amount=amount,
             left_volume=left_volume,
             right_volume=right_volume,
             left_minutes=left_minutes,
@@ -422,7 +426,7 @@ class SyncEngine:
             timezone_offset=timezone_offset,
             note=note,
         )
-        return await self._add(target, baby_id, draft, object_id)
+        return await self._add(target, None, draft, object_id)
 
     async def start_sleep(
         self,
@@ -513,16 +517,19 @@ class SyncEngine:
         raise TimerNotRunningError(f"sleep {object_id} isn't running")
 
     async def _add[R: Record](
-        self, target: WriteTarget, baby_id: str, draft: Draft[R], object_id: str | None
+        self, target: WriteTarget, baby_id: str | None, draft: Draft[R], object_id: str | None
     ) -> R:
-        """The shared write path of every add: number, post, confirm, apply."""
+        """The shared write path of every add: number, post, confirm, apply. ``baby_id`` is
+        ``None`` for a record that belongs to the account, not a baby (a pump)."""
         if object_id is not None:
             object_id = object_id.upper()
         async with self._lock:
             self._check_can_write(target)
-            baby = self.babies().get(baby_id)
-            if baby is None:
-                raise UnknownBabyError(f"no baby {baby_id} is known from sync")
+            baby = None
+            if baby_id is not None:
+                baby = self.babies().get(baby_id)
+                if baby is None:
+                    raise UnknownBabyError(f"no baby {baby_id} is known from sync")
             number = await self._prepare(target)
             if object_id is not None:
                 if object_id in self._created:
@@ -792,6 +799,17 @@ class SyncEngine:
             current = latest.get(record.record_type)
             if current is None or _sort_key(record) > _sort_key(current):
                 latest[record.record_type] = record
+        return latest
+
+    def latest_pump(self) -> Pump | None:
+        """The newest pump on the account, by the time it happened, whoever logged it. Pumps
+        belong to the account, not a baby, so ``latest_records`` never includes them."""
+        latest: Pump | None = None
+        for record in self._records.values():
+            if not isinstance(record, Pump) or record.time is None:
+                continue
+            if latest is None or _sort_key(record) > _sort_key(latest):
+                latest = record
         return latest
 
     def to_dict(self) -> dict[str, Any]:
