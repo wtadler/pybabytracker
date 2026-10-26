@@ -114,6 +114,11 @@ class DeviceProbe:
     highest_returned: int
     # How many more came back from a follow-up read past the highest number, if one was made.
     follow_up_returned: int | None = None
+    # How many different numbers came back (fewer than ``returned`` means duplicates).
+    distinct_returned: int | None = None
+    # Whether a read from two below the lowest number returned the number just below it, which
+    # means the server pages newest first. None when no such read was made.
+    pages_backward: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -133,15 +138,24 @@ async def probe_history(client: BabyTrackerClient, probe_device_uuid: str) -> Pr
         follow_up: int | None = None
         if highest < device.last_sync_id:
             follow_up = len(await client.get_transactions(device.device_uuid, highest))
+        lowest = min(numbers, default=0)
+        pages_backward: bool | None = None
+        if lowest > 2:
+            # A server that trimmed its history has nothing below the lowest number. One that
+            # answers with only its newest entries gives the page just below when asked for it.
+            below = await client.get_transactions(device.device_uuid, lowest - 2)
+            pages_backward = any(t.sync_id == lowest - 1 for t in below)
         probes.append(
             DeviceProbe(
                 device.device_uuid,
                 device.device_name,
                 device.last_sync_id,
                 len(transactions),
-                min(numbers, default=0),
+                lowest,
                 highest,
                 follow_up,
+                len(set(numbers)),
+                pages_backward,
             )
         )
     listed = any(d.device_uuid == probe_device_uuid for d in devices)
@@ -149,7 +163,7 @@ async def probe_history(client: BabyTrackerClient, probe_device_uuid: str) -> Pr
 
 
 def probe_verdict(probe: DeviceProbe) -> str:
-    """Name what the read from 0 showed: full, paged, trimmed, or gaps."""
+    """Name what the read from 0 showed: full, paged, trimmed, duplicates, or gaps."""
     if probe.last_sync_id == 0 and probe.returned == 0:
         return "full history (the log is empty)"
     if probe.returned == 0:
@@ -161,12 +175,18 @@ def probe_verdict(probe: DeviceProbe) -> str:
         else:
             parts.append("the log stops below LastSyncID")
     if probe.lowest_returned > 1:
-        parts.append(f"starts at {probe.lowest_returned} (older numbers trimmed)")
-    if not parts:
-        if probe.returned == probe.last_sync_id:
-            return "full history"
-        return "gaps (every number from 1 to LastSyncID is present only partly)"
-    return "; ".join(parts)
+        if probe.pages_backward:
+            parts.append("paged (newest first)")
+        else:
+            parts.append(f"starts at {probe.lowest_returned} (older numbers trimmed)")
+    distinct = probe.returned if probe.distinct_returned is None else probe.distinct_returned
+    if probe.returned > distinct:
+        parts.append(f"duplicates: {probe.returned} returned, {distinct} different numbers")
+    # Gaps are only told apart from a short or trimmed read when nothing else explains them.
+    unexplained = not parts or all(part.startswith("duplicates") for part in parts)
+    if unexplained and distinct != probe.last_sync_id:
+        parts.append(f"gaps: {distinct} of {probe.last_sync_id} numbers present")
+    return "; ".join(parts) or "full history"
 
 
 def format_probe(report: ProbeReport) -> list[str]:

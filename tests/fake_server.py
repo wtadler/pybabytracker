@@ -62,6 +62,10 @@ class FakeSyncServer:
         self.page_size: int | None = None
         # Leave out log entries numbered below this (an older history the server trimmed).
         self.trim_below: int | None = None
+        # Page backward from the newest entry. A read from 0 returns the newest ``page_size``
+        # entries; a read from S returns the newest ``page_size`` entries numbered up to S + 1,
+        # so the page just below the one before it.
+        self.newest_first = False
         self.raw_devices_body: str | None = None
         self.base_url = ""
 
@@ -169,11 +173,14 @@ class FakeSyncServer:
         if device is None:
             return self._json([])
         since = int(request.match_info["since"])
-        entries = [e for e in device.log if "SyncID" not in e or int(e["SyncID"]) > since]
+        if self.newest_first and since > 0:
+            entries = [e for e in device.log if "SyncID" not in e or int(e["SyncID"]) <= since + 1]
+        else:
+            entries = [e for e in device.log if "SyncID" not in e or int(e["SyncID"]) > since]
         if self.trim_below is not None:
             entries = [
                 e for e in entries if "SyncID" not in e or int(e["SyncID"]) >= self.trim_below
             ]
         if self.page_size is not None:
-            entries = entries[: self.page_size]
+            entries = entries[-self.page_size :] if self.newest_first else entries[: self.page_size]
         return self._json(entries)

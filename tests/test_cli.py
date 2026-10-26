@@ -9,7 +9,7 @@ from conftest import PROBE_UUID
 from factories import BABY_ID, BABY_TWO_ID, baby_payload, payload_for
 from fake_server import FakeSyncServer
 
-from pybabytracker import OP_ADD
+from pybabytracker import OP_ADD, BabyTrackerClient
 from pybabytracker.cli import (
     PROBE_DEVICE_NAME,
     CredentialsError,
@@ -269,3 +269,160 @@ async def test_probe_verdict_gaps(fake_server: FakeSyncServer, tmp_path: Path) -
     text = await _probe(fake_server, tmp_path)
     assert "returned 4 of LastSyncID 5, lowest 1, highest 5" in text
     assert "gaps" in text
+
+
+# --- newest-first paging, duplicates, and the reworded gaps verdict -----------------------
+
+
+def _log_numbers(fake: FakeSyncServer, numbers: list[int]) -> None:
+    fake.add_device(TABLET, "Test Tablet")
+    for n in numbers:
+        fake.add_transaction(TABLET, OP_ADD, payload_for("Diaper", rid(100 + n)), sync_id=n)
+
+
+def _tablet_line(text: str) -> str:
+    return next(line for line in text.splitlines() if "Test Tablet" in line)
+
+
+def _tablet_reads(fake: FakeSyncServer) -> list[str]:
+    return [r.path for r in fake.calls("GET", f"/account/transaction/{TABLET}/")]
+
+
+async def test_a_server_that_returns_only_the_newest_entries_is_paged_not_trimmed(
+    fake_server: FakeSyncServer, tmp_path: Path
+) -> None:
+    _device_with(fake_server, 10)
+    fake_server.page_size = 3
+    fake_server.newest_first = True
+    line = _tablet_line(await _probe(fake_server, tmp_path))
+    assert "returned 3 of LastSyncID 10, lowest 8, highest 10" in line
+    assert "paged (newest first)" in line
+    assert "trimmed" not in line
+
+
+async def test_the_newest_first_check_reads_from_two_below_the_lowest_number(
+    fake_server: FakeSyncServer, tmp_path: Path
+) -> None:
+    _device_with(fake_server, 10)
+    fake_server.page_size = 3
+    fake_server.newest_first = True
+    await _probe(fake_server, tmp_path)
+    assert _tablet_reads(fake_server) == [
+        f"/account/transaction/{TABLET}/0",
+        f"/account/transaction/{TABLET}/6",
+    ]
+
+
+async def test_a_server_that_really_trims_still_reports_the_start_number(
+    fake_server: FakeSyncServer, tmp_path: Path
+) -> None:
+    _device_with(fake_server, 10)
+    fake_server.trim_below = 4
+    line = _tablet_line(await _probe(fake_server, tmp_path))
+    assert "starts at 4 (older numbers trimmed)" in line
+    assert "paged" not in line
+    assert _tablet_reads(fake_server)[-1] == f"/account/transaction/{TABLET}/2"
+
+
+async def test_a_trim_that_starts_at_two_is_reported_without_the_extra_read(
+    fake_server: FakeSyncServer, tmp_path: Path
+) -> None:
+    _device_with(fake_server, 6)
+    fake_server.trim_below = 2
+    line = _tablet_line(await _probe(fake_server, tmp_path))
+    assert "starts at 2 (older numbers trimmed)" in line
+    assert _tablet_reads(fake_server) == [f"/account/transaction/{TABLET}/0"]
+
+
+async def test_a_full_log_needs_no_extra_read(fake_server: FakeSyncServer, tmp_path: Path) -> None:
+    _device_with(fake_server, 6)
+    line = _tablet_line(await _probe(fake_server, tmp_path))
+    assert "full history" in line
+    assert _tablet_reads(fake_server) == [f"/account/transaction/{TABLET}/0"]
+
+
+async def test_newest_first_with_a_page_as_large_as_the_log_is_full_history(
+    fake_server: FakeSyncServer, tmp_path: Path
+) -> None:
+    _device_with(fake_server, 6)
+    fake_server.page_size = 6
+    fake_server.newest_first = True
+    assert "full history" in _tablet_line(await _probe(fake_server, tmp_path))
+
+
+async def test_the_newest_first_check_writes_nothing(
+    fake_server: FakeSyncServer, tmp_path: Path
+) -> None:
+    _device_with(fake_server, 10)
+    fake_server.page_size = 3
+    fake_server.newest_first = True
+    await _probe(fake_server, tmp_path)
+    assert not fake_server.calls("POST", "/account/transaction")
+
+
+async def test_duplicate_numbers_are_reported_as_duplicates_not_gaps(
+    fake_server: FakeSyncServer, tmp_path: Path
+) -> None:
+    _log_numbers(fake_server, [1, 2, 3, 3, 4])
+    line = _tablet_line(await _probe(fake_server, tmp_path))
+    assert "returned 5 of LastSyncID 4" in line
+    assert "duplicates" in line
+    assert "gaps" not in line
+    assert "full history" not in line
+
+
+async def test_duplicates_and_gaps_in_one_log_are_both_reported(
+    fake_server: FakeSyncServer, tmp_path: Path
+) -> None:
+    _log_numbers(fake_server, [1, 2, 2, 4, 5])
+    line = _tablet_line(await _probe(fake_server, tmp_path))
+    assert "duplicates" in line
+    assert "gaps: 4 of 5 numbers present" in line
+
+
+async def test_the_gaps_verdict_names_how_many_numbers_are_present(
+    fake_server: FakeSyncServer, tmp_path: Path
+) -> None:
+    _log_numbers(fake_server, [1, 2, 4, 5])
+    line = _tablet_line(await _probe(fake_server, tmp_path))
+    assert "gaps: 4 of 5 numbers present" in line
+    assert "duplicates" not in line
+    assert "every number from 1" not in line
+
+
+async def test_a_log_with_no_duplicates_or_gaps_mentions_neither(
+    fake_server: FakeSyncServer, tmp_path: Path
+) -> None:
+    _device_with(fake_server, 5)
+    line = _tablet_line(await _probe(fake_server, tmp_path))
+    assert "duplicates" not in line
+    assert "gaps" not in line
+
+
+# --- the fake server's newest-first option -----------------------------------------------
+
+
+async def test_the_fake_newest_first_option_returns_the_newest_page_from_zero(
+    fake_server: FakeSyncServer, client: BabyTrackerClient
+) -> None:
+    _device_with(fake_server, 10)
+    fake_server.page_size = 3
+    fake_server.newest_first = True
+    assert [t.sync_id for t in await client.get_transactions(TABLET, 0)] == [8, 9, 10]
+
+
+async def test_the_fake_newest_first_option_pages_backward_from_a_later_number(
+    fake_server: FakeSyncServer, client: BabyTrackerClient
+) -> None:
+    _device_with(fake_server, 10)
+    fake_server.page_size = 3
+    fake_server.newest_first = True
+    assert [t.sync_id for t in await client.get_transactions(TABLET, 6)] == [5, 6, 7]
+
+
+async def test_the_fake_returns_oldest_first_pages_unless_newest_first_is_set(
+    fake_server: FakeSyncServer, client: BabyTrackerClient
+) -> None:
+    _device_with(fake_server, 10)
+    fake_server.page_size = 3
+    assert [t.sync_id for t in await client.get_transactions(TABLET, 0)] == [1, 2, 3]
