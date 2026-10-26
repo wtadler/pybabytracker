@@ -34,6 +34,9 @@ _TIME = "time"
 _BABY = "baby"
 _VOLUME = "volume"
 
+SIDE_LEFT = 0
+SIDE_RIGHT = 1
+
 UNIT_OUNCES = "oz"
 UNIT_MILLILITERS = "ml"
 
