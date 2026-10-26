@@ -18,8 +18,11 @@ Rules:
   skipped with a warning and never stops the sync. A record of an unknown type, or of a known
   type with values the models don't understand, is kept raw.
 - The engine tracks the highest number seen per device, counting skipped transactions, and
-  only fetches devices whose ``LastSyncID`` is ahead of that. A fresh ``SyncEngine`` replays
-  every log, so it recovers skipped payloads once a library fix ships.
+  only fetches devices whose ``LastSyncID`` is ahead of that. The service returns at most 500
+  transactions per read, so ``sync`` keeps reading each device from its highest number until it
+  reaches the device's ``LastSyncID`` (as listed at the start of the sync), a read comes back
+  empty, or a read brings nothing new (a warning, so a stuck server can't loop forever). A
+  fresh ``SyncEngine`` replays every log, so it recovers skipped payloads once a library fix ships.
 """
 
 from __future__ import annotations
@@ -117,11 +120,23 @@ class SyncEngine:
         devices = self.devices_to_fetch(await source.get_devices())
         applied = skipped = 0
         for device in devices:
-            since = self._last_seen.get(device.device_uuid, 0)
-            transactions = await source.get_transactions(device.device_uuid, since)
-            result = self.apply(device.device_uuid, transactions)
-            applied += result.applied
-            skipped += result.skipped
+            while True:
+                since = self._last_seen.get(device.device_uuid, 0)
+                transactions = await source.get_transactions(device.device_uuid, since)
+                result = self.apply(device.device_uuid, transactions)
+                applied += result.applied
+                skipped += result.skipped
+                now = self._last_seen.get(device.device_uuid, 0)
+                if now == since:
+                    if transactions:
+                        _LOGGER.warning(
+                            "Device %s returned nothing new after number %s; stopping",
+                            device.device_uuid,
+                            since,
+                        )
+                    break
+                if now >= device.last_sync_id:
+                    break
         return SyncResult(len(devices), applied, skipped)
 
     def apply(self, device_uuid: str, transactions: Iterable[RawTransaction]) -> ApplyResult:
