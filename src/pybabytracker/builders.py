@@ -46,9 +46,14 @@ from .models import (
     Volume,
     VolumeMeasure,
 )
+from .times import format_time
 
 MAX_MINUTES_PER_SIDE = 240
 MAX_SLEEP = timedelta(hours=24)
+MAX_SLEEP_MINUTES = 24 * 60
+# How far ahead of this clock a timer's start may be: phones and Home Assistant disagree a little.
+START_SKEW = timedelta(minutes=1)
+
 
 # What the app filled in on the captured nursing add: a finished, detailed session.
 _NURSING_FINISHED_STATE = 5
@@ -247,8 +252,7 @@ def draft_sleep(
         raise ValueError("end must be after start")
     if end - start > MAX_SLEEP:
         raise ValueError("a sleep can't be longer than 24 hours")
-    seconds = (end - start).total_seconds()
-    minutes = max(1, math.floor(seconds / 60 + 0.5))
+    minutes = sleep_minutes(start, end)
     event, tz, text = _common(start, timezone_offset, note)
 
     def build(object_id: str, baby: Baby, timestamp: datetime) -> Sleep:
@@ -258,6 +262,85 @@ def draft_sleep(
         )
 
     return Draft(Sleep, build)
+
+
+def sleep_minutes(start: datetime, end: datetime) -> int:
+    """A finished sleep's duration: whole minutes rounded half up, at least 1 (0 means running).
+    The caller checks that ``end`` is after ``start``."""
+    seconds = (end - start).total_seconds()
+    return max(1, math.floor(seconds / 60 + 0.5))
+
+
+def draft_sleep_start(
+    *, start: datetime | None, timezone_offset: int | None, note: str, now: datetime | None = None
+) -> Draft[Sleep]:
+    """A running sleep: ``duration`` 0, as the app posts at a timer's start. ``start`` defaults to
+    now; it can't be in the future (beyond a minute of clock skew) or more than 24 hours ago,
+    since such a sleep could never be ended inside the cap."""
+    current = now if now is not None else datetime.now(UTC)
+    begin = start if start is not None else current
+    _offset(begin, "start")
+    if begin - current > START_SKEW:
+        raise ValueError("a sleep can't start in the future")
+    if current - begin > MAX_SLEEP:
+        raise ValueError("a sleep can't have started more than 24 hours ago")
+    event, tz, text = _common(begin, timezone_offset, note)
+
+    def build(object_id: str, baby: Baby, timestamp: datetime) -> Sleep:
+        return Sleep(
+            **_base(object_id, baby, timestamp, event, tz, text),
+            duration=0,
+        )
+
+    return Draft(Sleep, build)
+
+
+@dataclass(frozen=True, slots=True)
+class SleepEnd:
+    """How a running sleep ends: the minutes to write, and what was adjusted to get them."""
+
+    minutes: int
+    end: datetime
+    future_clamped: bool = False  # ``end`` was more than START_SKEW ahead, so now was used
+    long_clamped: bool = False  # longer than 24 hours, so 1,440 minutes are written
+
+
+def resolve_sleep_end(sleep: Sleep, end: datetime, now: datetime) -> SleepEnd:
+    """Check that ``end`` can end ``sleep`` at ``now``, and work out the duration to write.
+
+    - ``end`` must be aware. One more than ``START_SKEW`` ahead of ``now`` is clamped to ``now``.
+    - An end at or before the start, by up to ``START_SKEW``, is a 1-minute sleep: a start saved
+      by a clock running a little fast (a phone's, or this one's within ``start_sleep``'s skew)
+      can always be stopped. An end further before the start raises ``ValueError``.
+    - Otherwise ``sleep_minutes``. A sleep longer than 24 hours is clamped to 1,440 minutes
+      rather than refused, so a timer someone forgot can always be stopped; the length can be
+      fixed in the app afterward.
+    """
+    _offset(end, "end")
+    start = sleep.time
+    if start is None:
+        raise ValueError(f"sleep {sleep.object_id} has no start time")
+    future = end - now > START_SKEW
+    if future:
+        end = now
+    if end <= start:
+        if start - end > START_SKEW:
+            raise ValueError("end must be after the sleep's start")
+        return SleepEnd(1, end, future_clamped=future)
+    if end - start > MAX_SLEEP:
+        return SleepEnd(MAX_SLEEP_MINUTES, end, future_clamped=future, long_clamped=True)
+    return SleepEnd(sleep_minutes(start, end), end, future_clamped=future)
+
+
+def ended_sleep_payload(sleep: Sleep, minutes: int, timestamp: datetime) -> dict[str, Any]:
+    """The update that ends a running sleep, as the app posts it at a timer's stop: the record as
+    last saved (key order and unknown keys kept), with only ``duration``, ``newFlage`` "false",
+    and ``timestamp`` changed."""
+    payload = sleep.to_payload()
+    payload["duration"] = minutes
+    payload["newFlage"] = "false"
+    payload["timestamp"] = format_time(timestamp.astimezone(UTC))
+    return payload
 
 
 def draft_pump(

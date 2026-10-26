@@ -94,6 +94,37 @@ key.
 - Pump: `amount` is the sum of the two sides; a side left out is written as 0 in the other's
   unit, and both sides must use one unit. `sides` is written as 0, as captured.
 
+### Sleep timers
+
+The app syncs a running sleep: an add with `duration` 0 at the start, then an update (opcode 1)
+to the same record at the stop. Nursing timers stay on the phone until they stop, so a timed
+nursing session is written once, finished, with `add_nursing`.
+
+| Method | Writes | Notes |
+|---|---|---|
+| `start_sleep(client, baby_id, start=None, ...)` | `Sleep` (add) | `duration` 0; `start` defaults to now, no more than a minute ahead or 24 hours back |
+| `end_sleep(client, object_id, end=None)` | `Sleep` (update) | ends a running sleep, whichever device started it |
+
+- `end_sleep` sends the record as last saved, changing only `duration` (rounded like
+  `add_sleep`), `newFlage` (`"false"`), and `timestamp` (the write time, or one second past the
+  stored one when that's ahead of this clock, so the end wins the merge). Key order and unknown
+  keys are kept.
+- A sleep longer than 24 hours at the stop is **clamped to 1,440 minutes** with a warning, not
+  refused, so a forgotten timer can always be stopped. An `end` more than a minute in the future
+  is clamped to now, and an end at or up to a minute before the start (a clock running a little
+  fast) is written as 1 minute.
+- Refused before any request: a record never seen or deleted (`RecordNotFoundError`), one that
+  isn't a sleep (`WrongRecordTypeError`), or a sleep another device finished
+  (`TimerNotRunningError`). A sleep this device already ended (its end is in this device's log,
+  even if a phone edited it since) is returned as is, with nothing posted, so retries are safe.
+- The end carries the whole record as this device last saw it, so a phone edit that hasn't synced
+  yet (a note, say) is overwritten by it, as the app's own edits overwrite each other.
+- A phone delete racing an end: the app's delete keeps the record's old timestamp, so an end
+  posted after it (with a newer timestamp) outlives it, and the sleep stays here as ended. How the
+  app shows that case is still to be checked on a test device.
+- An end is an update, not an add: it doesn't make another device's sleep this device's own, so
+  `delete_record` still refuses it. Undo of a sleep this device started works running or ended.
+
 The service lists a device only after its first post; on the test account, the dev device
 appeared with `LastSyncID` 1 right after its first add, with no confirmation step.
 
