@@ -13,7 +13,12 @@ from urllib.parse import quote
 import aiohttp
 
 from ._version import __version__
-from .exceptions import AuthenticationError, BabyTrackerConnectionError, ProtocolError
+from .exceptions import (
+    AuthenticationError,
+    BabyTrackerConnectionError,
+    NoResponseError,
+    ProtocolError,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -85,6 +90,11 @@ class BabyTrackerClient:
 
     def __repr__(self) -> str:
         return f"BabyTrackerClient(device_uuid={self._device_uuid!r}, base_url={self._base_url!r})"
+
+    @property
+    def device_uuid(self) -> str:
+        """The device this client signs in and posts as."""
+        return self._device_uuid
 
     @property
     def account_id(self) -> int | None:
@@ -177,10 +187,27 @@ class BabyTrackerClient:
             raise ProtocolError("no entry in the transaction list had a usable SyncID")
         return transactions
 
-    async def _request(self, method: str, path: str, body: Any = None) -> Any:
+    async def post_transaction(self, op_code: int, sync_id: int, transaction: str) -> None:
+        """Append one transaction to this device's log as number ``sync_id``.
+
+        This is the raw call. It doesn't choose numbers or check whether a failed post landed;
+        ``SyncEngine``'s write methods do both. A 401 retry resends the same number, which is
+        safe because a 401 means the service didn't accept the post.
+        """
+        await self._request(
+            "POST",
+            "/account/transaction",
+            {"OPCode": int(op_code), "SyncID": int(sync_id), "Transaction": transaction},
+            expect_json=False,
+        )
+
+    async def _request(
+        self, method: str, path: str, body: Any = None, *, expect_json: bool = True
+    ) -> Any:
         """Call an endpoint that needs a session.
 
         A 401 means the session expired: sign in again once and retry. A second 401 raises.
+        With ``expect_json`` false, any 2xx answer counts and its body is ignored.
         """
         if not self._signed_in:
             async with self._sign_in_lock:
@@ -191,7 +218,7 @@ class BabyTrackerClient:
             status, text = await self._send(method, path, body)
             if status != 401:
                 _raise_for_status(status)
-                return _parse_json(text)
+                return _parse_json(text) if expect_json else None
             if attempt == 1:
                 self._signed_in = False
                 break
@@ -215,8 +242,12 @@ class BabyTrackerClient:
                 timeout=self._timeout,
             ) as response:
                 return response.status, await response.text()
-        except (aiohttp.ClientError, TimeoutError) as err:
+        except aiohttp.ClientConnectorError as err:
+            # No connection was made, so the request never reached the service.
             raise BabyTrackerConnectionError(f"could not reach the service: {err!r}") from err
+        except (aiohttp.ClientError, TimeoutError) as err:
+            # Sent, but no answer came back: the service may or may not have acted on it.
+            raise NoResponseError(f"no answer from the service: {err!r}") from err
 
 
 def _parse_entry(entry: Any) -> RawTransaction | None:

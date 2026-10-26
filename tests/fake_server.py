@@ -47,7 +47,8 @@ class FakeSyncServer:
         self.password = password
         self.register_devices = register_devices
         self.devices: dict[str, FakeDevice] = {}
-        self.sessions: set[str] = set()
+        # Session cookie -> the device that signed in with it.
+        self.sessions: dict[str, tuple[str, str, str]] = {}
         self.requests: list[RecordedRequest] = []
         # Status to return from the data endpoints instead of real data.
         self.force_status: int | None = None
@@ -67,6 +68,14 @@ class FakeSyncServer:
         # so the page just below the one before it.
         self.newest_first = False
         self.raw_devices_body: str | None = None
+        # What each successive POST /account/transaction does; "ok" once the list is empty.
+        #   "500": answer 500 without recording.
+        #   "401": expire every session and answer 401 without recording.
+        #   "timeout-landed": record, then stall past the client's timeout.
+        #   "timeout-lost": stall past the client's timeout, never record.
+        #   "timeout-late": stall past the client's timeout, then record (lands late).
+        self.post_script: list[str] = []
+        self.post_stall = 1.0
         self.base_url = ""
 
     # --- test setup helpers -------------------------------------------------
@@ -94,6 +103,11 @@ class FakeSyncServer:
     def expire_sessions(self) -> None:
         self.sessions.clear()
 
+    def posted(self, device_uuid: str) -> list[dict[str, Any]]:
+        """Every entry in a device's log, in the order it arrived."""
+        device = self.devices.get(device_uuid)
+        return [] if device is None else list(device.log)
+
     def calls(self, method: str, prefix: str) -> list[RecordedRequest]:
         return [r for r in self.requests if r.method == method and r.path.startswith(prefix)]
 
@@ -104,6 +118,7 @@ class FakeSyncServer:
         app.router.add_post("/session", self._post_session)
         app.router.add_get("/account/device", self._get_devices)
         app.router.add_get("/account/transaction/{uuid}/{since}", self._get_transactions)
+        app.router.add_post("/account/transaction", self._post_transaction)
         return app
 
     @staticmethod
@@ -131,7 +146,7 @@ class FakeSyncServer:
             new = self.add_device(device["DeviceUUID"], device["DeviceName"])
             new.os_info = device["DeviceOSInfo"]
         token = secrets.token_hex(8)
-        self.sessions.add(token)
+        self.sessions[token] = (device["DeviceUUID"], device["DeviceName"], device["DeviceOSInfo"])
         response = self._json({"AccountID": 424242})
         response.set_cookie("PHPSESSID", token)
         return response
@@ -184,3 +199,38 @@ class FakeSyncServer:
         if self.page_size is not None:
             entries = entries[-self.page_size :] if self.newest_first else entries[: self.page_size]
         return self._json(entries)
+
+    async def _post_transaction(self, request: web.Request) -> web.Response:
+        if (rejected := await self._guard(request)) is not None:
+            return rejected
+        body = self.requests[-1].body
+        session_device = self.sessions[request.cookies["PHPSESSID"]]
+        action = self.post_script.pop(0) if self.post_script else "ok"
+        if action == "500":
+            return web.Response(status=500, text="forced")
+        if action == "401":
+            self.expire_sessions()
+            return web.Response(status=401, text="Unauthorized")
+        if action == "timeout-late":
+            # Scheduled apart from the handler, which aiohttp cancels when the client gives up.
+            asyncio.get_running_loop().call_later(
+                self.post_stall, self._record_post, session_device, body
+            )
+        if action in ("timeout-lost", "timeout-late"):
+            await asyncio.sleep(self.post_stall)
+            return web.Response(status=201, text="")
+        self._record_post(session_device, body)
+        if action == "timeout-landed":
+            await asyncio.sleep(self.post_stall)
+        return web.Response(status=201, text="")
+
+    def _record_post(self, session_device: tuple[str, str, str], body: Any) -> None:
+        uuid, name, os_info = session_device
+        # The real service lists a device only once it has posted (PROTOCOL.md, Probe findings).
+        device = self.devices.get(uuid)
+        if device is None:
+            device = self.add_device(uuid, name)
+            device.os_info = os_info
+        device.log.append(
+            {"SyncID": body["SyncID"], "OPCode": body["OPCode"], "Transaction": body["Transaction"]}
+        )

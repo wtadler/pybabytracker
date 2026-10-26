@@ -261,7 +261,7 @@ def test_saved_state_round_trips_with_the_new_version_key() -> None:
         HIGH, [tx(1, OP_DELETE, diaper("gone", object_id="BBBBBBBB-0000-4000-8000-000000000002"))]
     )
     saved = engine.to_dict()
-    assert saved["version"] == 3
+    assert saved["version"] == 4
     assert reloaded(engine).to_dict() == saved
 
 
@@ -292,11 +292,11 @@ def version_2_state(*, tombstone: bool = False) -> dict[str, Any]:
     return state
 
 
-def test_a_version_2_state_still_loads_and_is_saved_as_version_3() -> None:
+def test_a_version_2_state_still_loads_and_is_saved_as_the_current_version() -> None:
     engine = SyncEngine.from_dict(version_2_state())
     assert engine.records[RID].note == "old save"
     saved = engine.to_dict()
-    assert saved["version"] == 3
+    assert saved["version"] == 4
     assert "rank" in saved["records"][0]["version"]
 
 
@@ -317,7 +317,7 @@ def test_a_version_2_tombstone_still_blocks_an_equal_timestamp_add() -> None:
 
 def test_an_unsupported_future_version_still_fails_clearly() -> None:
     with pytest.raises(ValueError, match="version"):
-        SyncEngine.from_dict({"version": 4, "last_seen": {}, "records": []})
+        SyncEngine.from_dict({"version": 5, "last_seen": {}, "records": []})
 
 
 # --- property: random causal histories, equal timestamps forced often ---------------------
