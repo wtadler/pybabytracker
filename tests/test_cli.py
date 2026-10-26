@@ -111,8 +111,16 @@ def _env(fake: FakeSyncServer, password: str | None = None) -> dict[str, str]:
 def _seed(fake: FakeSyncServer) -> None:
     fake.add_device(PHONE)
     other = baby_payload("Second Baby", BABY_TWO_ID)
-    fake.add_transaction(PHONE, OP_ADD, payload_for("Diaper", rid(1), time="2026-10-25 10:00:00 +0000", status=0))
-    fake.add_transaction(PHONE, OP_ADD, payload_for("Diaper", rid(2), time="2026-10-25 12:00:00 +0000", status=1, note="Légère fuite"))
+    fake.add_transaction(
+        PHONE, OP_ADD, payload_for("Diaper", rid(1), time="2026-10-25 10:00:00 +0000", status=0)
+    )
+    fake.add_transaction(
+        PHONE,
+        OP_ADD,
+        payload_for(
+            "Diaper", rid(2), time="2026-10-25 12:00:00 +0000", status=1, note="Légère fuite"
+        ),
+    )
     fake.add_transaction(PHONE, OP_ADD, payload_for("Sleep", rid(3), duration=1800))
     fake.add_transaction(PHONE, OP_ADD, payload_for("Formula", rid(4), baby=other))
 
@@ -179,12 +187,18 @@ async def test_probe_history_reports_returned_versus_last_sync_id_per_device(
 ) -> None:
     _seed(fake_server)  # PHONE: 4 transactions, LastSyncID 4
     fake_server.add_device("BBBB2222-0000-4000-8000-00000000000B", "Test Tablet")
-    fake_server.add_transaction("BBBB2222-0000-4000-8000-00000000000B", OP_ADD, payload_for("Diaper", rid(9)))
-    fake_server.add_transaction("BBBB2222-0000-4000-8000-00000000000B", OP_ADD, payload_for("Diaper", rid(10)), sync_id=7)
+    fake_server.add_transaction(
+        "BBBB2222-0000-4000-8000-00000000000B", OP_ADD, payload_for("Diaper", rid(9))
+    )
+    fake_server.add_transaction(
+        "BBBB2222-0000-4000-8000-00000000000B", OP_ADD, payload_for("Diaper", rid(10)), sync_id=7
+    )
     fake_server.add_device("CCCC3333-0000-4000-8000-00000000000C", "Empty Device")
     out, err = io.StringIO(), io.StringIO()
 
-    code = await run_cli(_args(fake_server, tmp_path, "--probe-history"), _env(fake_server), out, err)
+    code = await run_cli(
+        _args(fake_server, tmp_path, "--probe-history"), _env(fake_server), out, err
+    )
 
     text = out.getvalue()
     assert code == 0, err.getvalue()
@@ -202,6 +216,8 @@ async def test_probe_history_says_when_the_probe_device_did_not_join(
     fake_server.register_devices = False
     fake_server.add_device(PHONE)
     out, err = io.StringIO(), io.StringIO()
-    code = await run_cli(_args(fake_server, tmp_path, "--probe-history"), _env(fake_server), out, err)
+    code = await run_cli(
+        _args(fake_server, tmp_path, "--probe-history"), _env(fake_server), out, err
+    )
     assert code == 0, err.getvalue()
     assert "appears in the device list: no" in out.getvalue()

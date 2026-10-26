@@ -108,7 +108,9 @@ def test_non_utc_offsets_are_preserved_on_the_round_trip() -> None:
 
 def test_time_helpers() -> None:
     assert parse_time("2026-10-25 15:40:49 +0000") == datetime(2026, 10, 25, 15, 40, 49, tzinfo=UTC)
-    assert format_time(datetime(2026, 10, 25, 15, 40, 49, tzinfo=UTC)) == "2026-10-25 15:40:49 +0000"
+    assert (
+        format_time(datetime(2026, 10, 25, 15, 40, 49, tzinfo=UTC)) == "2026-10-25 15:40:49 +0000"
+    )
     with pytest.raises(ValueError):
         format_time(datetime(2026, 10, 25, 15, 40, 49))
     with pytest.raises(ValueError):

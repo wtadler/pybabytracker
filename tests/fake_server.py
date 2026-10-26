@@ -108,9 +108,7 @@ class FakeSyncServer:
         if request.can_read_body:
             body = json.loads(await request.text())
         self.requests.append(
-            RecordedRequest(
-                request.method, request.path, body, request.headers.get("User-Agent")
-            )
+            RecordedRequest(request.method, request.path, body, request.headers.get("User-Agent"))
         )
 
     async def _post_session(self, request: web.Request) -> web.Response:

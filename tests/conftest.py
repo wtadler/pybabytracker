@@ -30,9 +30,7 @@ async def session() -> AsyncIterator[aiohttp.ClientSession]:
 
 
 @pytest_asyncio.fixture
-async def client(
-    fake_server: FakeSyncServer, session: aiohttp.ClientSession
-) -> BabyTrackerClient:
+async def client(fake_server: FakeSyncServer, session: aiohttp.ClientSession) -> BabyTrackerClient:
     return BabyTrackerClient(
         fake_server.email,
         fake_server.password,

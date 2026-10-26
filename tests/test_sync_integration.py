@@ -94,7 +94,9 @@ async def test_bad_and_unknown_transactions_do_not_stop_a_real_sync(
     client: BabyTrackerClient, fake_server: FakeSyncServer
 ) -> None:
     fake_server.add_device(PHONE)
-    fake_server.add_transaction(PHONE, OP_ADD, payload_for("Diaper", rid(1), note="Légère fuite 💧"))
+    fake_server.add_transaction(
+        PHONE, OP_ADD, payload_for("Diaper", rid(1), note="Légère fuite 💧")
+    )
     fake_server.add_raw_transaction(PHONE, 2, OP_ADD, "%%% broken %%%")
     fake_server.add_transaction(
         PHONE, OP_ADD, {"BCObjectType": "Teleporter", "objectID": rid(3)}, sync_id=3

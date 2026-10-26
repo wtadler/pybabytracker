@@ -146,7 +146,11 @@ def test_an_update_with_an_older_timestamp_still_applies_in_log_order() -> None:
     engine.apply(
         PHONE,
         [
-            tx(1, OP_ADD, payload_for("Diaper", rid(1), status=0, timestamp="2026-10-26 12:00:00 +0000")),
+            tx(
+                1,
+                OP_ADD,
+                payload_for("Diaper", rid(1), status=0, timestamp="2026-10-26 12:00:00 +0000"),
+            ),
             tx(
                 2,
                 OP_UPDATE,
@@ -262,7 +266,13 @@ def test_an_empty_log_page_changes_nothing() -> None:
 
 def test_only_devices_ahead_of_what_was_seen_are_fetched() -> None:
     engine = SyncEngine()
-    engine.apply(PHONE, [tx(1, OP_ADD, payload_for("Diaper", rid(1))), tx(2, OP_ADD, payload_for("Diaper", rid(2)))])
+    engine.apply(
+        PHONE,
+        [
+            tx(1, OP_ADD, payload_for("Diaper", rid(1))),
+            tx(2, OP_ADD, payload_for("Diaper", rid(2))),
+        ],
+    )
 
     def dev(uuid: str, last: int) -> Device:
         return Device(device_uuid=uuid, last_sync_id=last, device_name="x", device_os_info="y")
@@ -374,7 +384,11 @@ def test_babies_come_from_embedded_objects_and_baby_records() -> None:
         PHONE,
         [
             tx(1, OP_ADD, payload_for("Diaper", rid(1))),
-            tx(2, OP_ADD, payload_for("Diaper", rid(2), baby=baby_payload("Other Baby", BABY_TWO_ID))),
+            tx(
+                2,
+                OP_ADD,
+                payload_for("Diaper", rid(2), baby=baby_payload("Other Baby", BABY_TWO_ID)),
+            ),
         ],
     )
     babies = engine.babies()
@@ -394,7 +408,11 @@ def test_latest_records_picks_the_newest_of_each_type_for_a_baby() -> None:
             tx(2, OP_ADD, payload_for("Diaper", rid(2), time="2026-10-25 12:00:00 +0000")),
             tx(3, OP_ADD, payload_for("Diaper", rid(3), time="2026-10-25 11:00:00 +0000")),
             tx(4, OP_ADD, payload_for("Sleep", rid(4))),
-            tx(5, OP_ADD, payload_for("Diaper", rid(5), baby=baby_payload("Other Baby", BABY_TWO_ID))),
+            tx(
+                5,
+                OP_ADD,
+                payload_for("Diaper", rid(5), baby=baby_payload("Other Baby", BABY_TWO_ID)),
+            ),
         ],
     )
     latest = engine.latest_records(BABY_ID)
@@ -402,4 +420,3 @@ def test_latest_records_picks_the_newest_of_each_type_for_a_baby() -> None:
     assert latest["Diaper"].object_id == rid(2)
     assert engine.latest_records(BABY_TWO_ID)["Diaper"].object_id == rid(5)
     assert engine.latest_records("no-such-baby") == {}
-
