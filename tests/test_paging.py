@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 
 import pytest
 from factories import payload_for
@@ -44,9 +45,15 @@ def reads(server: FakeSyncServer, uuid: str) -> list[str]:
 
 def memory_logs(counts: dict[str, int]) -> dict[str, list[RawTransaction]]:
     return {
-        uuid: [tx(n, OP_ADD, payload_for("Diaper", rid(n + _offset(uuid)))) for n in range(1, c + 1)]
+        uuid: [
+            tx(n, OP_ADD, payload_for("Diaper", rid(n + _offset(uuid)))) for n in range(1, c + 1)
+        ]
         for uuid, c in counts.items()
     }
+
+
+def _no_hook(uuid: str, since: int) -> None:
+    return None
 
 
 class PagedMemorySource(MemorySource):
@@ -55,7 +62,7 @@ class PagedMemorySource(MemorySource):
     def __init__(self, logs: dict[str, list[RawTransaction]], page_size: int) -> None:
         super().__init__(logs)
         self.page_size = page_size
-        self.after_fetch = lambda uuid, since: None
+        self.after_fetch: Callable[[str, int], None] = _no_hook
 
     async def get_transactions(self, device_uuid: str, since_sync_id: int) -> list[RawTransaction]:
         page = (await super().get_transactions(device_uuid, since_sync_id))[: self.page_size]
