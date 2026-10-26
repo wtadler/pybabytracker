@@ -13,10 +13,12 @@ from .exceptions import (
     ObjectIdInUseError,
     ProtocolError,
     RecordNotFoundError,
+    TimerNotRunningError,
     TransactionDecodeError,
     UnknownBabyError,
     WriteError,
     WriteOutcomeUnknownError,
+    WrongRecordTypeError,
 )
 from .models import (
     DIAPER_DIRTY,
@@ -110,6 +112,7 @@ __all__ = [
     "SyncResult",
     "SyncSource",
     "Temperature",
+    "TimerNotRunningError",
     "TransactionDecodeError",
     "UnknownBabyError",
     "UnknownRecord",
@@ -118,6 +121,7 @@ __all__ = [
     "VolumeMeasure",
     "WriteError",
     "WriteOutcomeUnknownError",
+    "WrongRecordTypeError",
     "__version__",
     "decode_payload",
     "decode_transaction",

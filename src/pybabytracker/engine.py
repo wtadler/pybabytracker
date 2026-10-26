@@ -27,7 +27,8 @@ Rules:
   empty, or a read brings nothing new (a warning, so a stuck server can't loop forever). A
   fresh ``SyncEngine`` replays every log, so it recovers skipped payloads once a library fix ships.
 
-Writes (the ``add_*`` methods and ``delete_record``) post as this engine's own device:
+Writes (the ``add_*`` methods, ``start_sleep``, ``end_sleep``, and ``delete_record``) post as this
+engine's own device:
 
 - A write needs a completed sync (for the baby record and this device's numbers) and a client
   signed in as the engine's ``device_uuid``. Otherwise it's refused before any request.
@@ -55,6 +56,10 @@ Writes (the ``add_*`` methods and ``delete_record``) post as this engine's own d
   whether it was applied locally or read back by a sync. Like the app, a delete sends the
   record exactly as last saved, with only ``newFlage`` set to ``"false"``: its timestamp is not
   bumped.
+- The only edit (opcode 1) is ``end_sleep``, which ends a running sleep whichever device started
+  it. An update shares the numbering, pending, and grace-window rules above, but it isn't an add:
+  it never makes a record this device's own (``created_ids``, ``own_writes``). Its local apply
+  is the same merge a replay of the log performs.
 
 What the caller must do:
 
@@ -74,10 +79,20 @@ import time as _time
 import uuid
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
-from .builders import Draft, draft_bottle, draft_diaper, draft_nursing, draft_pump, draft_sleep
+from .builders import (
+    Draft,
+    check_sleep_end,
+    draft_bottle,
+    draft_diaper,
+    draft_nursing,
+    draft_pump,
+    draft_sleep,
+    draft_sleep_start,
+    ended_sleep_payload,
+)
 from .client import Device, RawTransaction
 from .exceptions import (
     AuthenticationError,
@@ -88,9 +103,11 @@ from .exceptions import (
     ObjectIdInUseError,
     ProtocolError,
     RecordNotFoundError,
+    TimerNotRunningError,
     TransactionDecodeError,
     UnknownBabyError,
     WriteOutcomeUnknownError,
+    WrongRecordTypeError,
 )
 from .models import (
     OP_ADD,
@@ -405,6 +422,83 @@ class SyncEngine:
             note=note,
         )
         return await self._add(target, baby_id, draft, object_id)
+
+    async def start_sleep(
+        self,
+        target: WriteTarget,
+        baby_id: str,
+        *,
+        start: datetime | None = None,
+        timezone_offset: int | None = None,
+        note: str = "",
+        object_id: str | None = None,
+    ) -> Sleep:
+        """Post a running sleep: an add with ``duration`` 0, as the app posts at a timer's start.
+
+        ``start`` (aware) defaults to now. It can't be more than a minute in the future or more
+        than 24 hours ago. End the sleep with ``end_sleep``. A retry with the same ``object_id``
+        works as for every ``add_*`` method.
+        """
+        draft = draft_sleep_start(start=start, timezone_offset=timezone_offset, note=note)
+        return await self._add(target, baby_id, draft, object_id)
+
+    async def end_sleep(
+        self, target: WriteTarget, object_id: str, *, end: datetime | None = None
+    ) -> Sleep:
+        """End a running sleep, whichever device started it: post an update (opcode 1).
+
+        This is the one edit the library makes to a record it may not have created. Like the
+        app, the update carries the record as last saved with only ``duration`` (whole minutes,
+        rounded as in ``add_sleep``, at least 1, clamped to 24 hours with a warning),
+        ``newFlage`` "false", and ``timestamp`` changed. The timestamp is the write time, or one
+        second past the stored one if that is ahead of this clock, so the update wins the merge
+        on every device. ``end`` (aware) defaults to now and must be after the sleep's start.
+
+        Refused before any request: ``RecordNotFoundError`` for a record never seen or deleted,
+        ``WrongRecordTypeError`` for a record that isn't a ``Sleep``, ``TimerNotRunningError``
+        for a sleep whose duration isn't 0. A sleep this device already ended (its newest version
+        is this device's update) is returned as is with nothing posted, so a retry after a write
+        that landed late, or a second call racing the first, is safe.
+        """
+        object_id = object_id.upper()
+        finish = end if end is not None else datetime.now(UTC)
+        async with self._lock:
+            self._check_can_write(target)
+            if (done := self._ended_or_running(object_id)) is not None:
+                return done
+            check_sleep_end(self._records[object_id], finish)  # type: ignore[arg-type]
+            number = await self._prepare(target)
+            # Catching up this device's own log may have brought in an earlier end that landed.
+            if (done := self._ended_or_running(object_id)) is not None:
+                return done
+            running = self._records[object_id]
+            assert isinstance(running, Sleep)
+            stamp = _now()
+            if running.timestamp is not None and running.timestamp >= stamp:
+                stamp = running.timestamp.astimezone(UTC) + timedelta(seconds=1)
+            ended = decode_payload(ended_sleep_payload(running, finish, stamp))
+            assert isinstance(ended, Sleep)
+            await self._send(target, number, OP_UPDATE, encode_transaction(ended))
+            return ended
+
+    def _ended_or_running(self, object_id: str) -> Sleep | None:
+        """``None`` if ``object_id`` is a running sleep; the sleep if this device already ended
+        it; otherwise raise why it can't be ended."""
+        record = self._records.get(object_id)
+        if record is None:
+            if object_id in self._tombstones:
+                raise RecordNotFoundError(f"record {object_id} was deleted")
+            raise RecordNotFoundError(f"no record {object_id} is known from sync")
+        if not isinstance(record, Sleep):
+            raise WrongRecordTypeError(
+                f"record {object_id} is a {record.record_type or 'record'}, not a Sleep"
+            )
+        if record.is_running:
+            return None
+        version = self._versions[object_id]
+        if version.device_uuid == self._device_uuid and version.rank == _RANK_UPDATE:
+            return record
+        raise TimerNotRunningError(f"sleep {object_id} isn't running")
 
     async def _add[R: Record](
         self, target: WriteTarget, baby_id: str, draft: Draft[R], object_id: str | None

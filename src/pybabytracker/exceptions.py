@@ -53,3 +53,11 @@ class WriteOutcomeUnknownError(WriteError):
 
 class ObjectIdInUseError(ValueError):
     """The object_id passed to an add already belongs to another record."""
+
+
+class TimerNotRunningError(WriteError):
+    """The sleep isn't running (its duration isn't 0), so there's nothing to end."""
+
+
+class WrongRecordTypeError(WriteError):
+    """The record isn't of the type the write needs (ending a timer needs a Sleep)."""
