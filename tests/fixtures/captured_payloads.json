@@ -67,7 +67,7 @@
     "label": "C3 pump add",
     "opcode": 0,
     "sync_id": 4,
-    "transaction": "eyJCQ09iamVjdFR5cGUiOiJQdW1wIiwiYW1vdW50Ijp7IkJDT2JqZWN0VHlwZSI6IlZvbHVtZU1lYXN1cmUiLCJlbmdsaXNoTWVhc3VyZSI6InRydWUiLCJ2YWx1ZSI6N30sImZpbmlzaFNpZGUiOjAsImxlZnRBbW91bnQiOnsiQkNPYmplY3RUeXBlIjoiVm9sdW1lTWVhc3VyZSIsImVuZ2xpc2hNZWFzdXJlIjoidHJ1ZSIsInZhbHVlIjoyfSwibGVmdER1cmF0aW9uIjoxLCJuZXdGbGFnZSI6InRydWUiLCJub3RlIjoiQzMiLCJvYmplY3RJRCI6IkNBRkUwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMyIsInBpY3R1cmVMb2FkZWQiOiJ0cnVlIiwicGljdHVyZU5vdGUiOltdLCJyaWdodEFtb3VudCI6eyJCQ09iamVjdFR5cGUiOiJWb2x1bWVNZWFzdXJlIiwiZW5nbGlzaE1lYXN1cmUiOiJ0cnVlIiwidmFsdWUiOjV9LCJyaWdodER1cmF0aW9uIjoxLCJzaWRlcyI6MCwidGltZSI6IjIwMjYtMTAtMjYgMTY6NTU6MTUgKzAwMDAiLCJ0aW1lc3RhbXAiOiIyMDI2LTEwLTI2IDE2OjU1OjQ3ICswMDAwIiwidGltZXpvbmUiOi0xODAwMCwiYmFieSI6eyJCQ09iamVjdFR5cGUiOiJCYWJ5IiwiZG9iIjoiMjAyNi0xMC0wMSAxMjowMDowMCArMDAwMCIsImdlbmRlciI6InRydWUiLCJuYW1lIjoiVGVzdCBCYWJ5IiwibmV3RmxhZ2UiOiJmYWxzZSIsIm9iamVjdElEIjoiQkJCQkJCQkItMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwicGljdHVyZU5hbWUiOiIiLCJ0aW1lc3RhbXAiOiIxOTcwLTAxLTAxIDAwOjAwOjAwICswMDAwIn19",
+    "transaction": "eyJCQ09iamVjdFR5cGUiOiJQdW1wIiwiYW1vdW50Ijp7IkJDT2JqZWN0VHlwZSI6IlZvbHVtZU1lYXN1cmUiLCJlbmdsaXNoTWVhc3VyZSI6InRydWUiLCJ2YWx1ZSI6N30sImZpbmlzaFNpZGUiOjAsImxlZnRBbW91bnQiOnsiQkNPYmplY3RUeXBlIjoiVm9sdW1lTWVhc3VyZSIsImVuZ2xpc2hNZWFzdXJlIjoidHJ1ZSIsInZhbHVlIjoyfSwibGVmdER1cmF0aW9uIjoxLCJuZXdGbGFnZSI6InRydWUiLCJub3RlIjoiQzMiLCJvYmplY3RJRCI6IkNBRkUwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMyIsInBpY3R1cmVMb2FkZWQiOiJ0cnVlIiwicGljdHVyZU5vdGUiOltdLCJyaWdodEFtb3VudCI6eyJCQ09iamVjdFR5cGUiOiJWb2x1bWVNZWFzdXJlIiwiZW5nbGlzaE1lYXN1cmUiOiJ0cnVlIiwidmFsdWUiOjV9LCJyaWdodER1cmF0aW9uIjoxLCJzaWRlcyI6MCwidGltZSI6IjIwMjYtMTAtMjYgMTY6NTU6MTUgKzAwMDAiLCJ0aW1lc3RhbXAiOiIyMDI2LTEwLTI2IDE2OjU1OjQ3ICswMDAwIiwidGltZXpvbmUiOi0xODAwMH0=",
     "payload": {
       "BCObjectType": "Pump",
       "amount": {
@@ -96,17 +96,7 @@
       "sides": 0,
       "time": "2026-10-26 16:55:15 +0000",
       "timestamp": "2026-10-26 16:55:47 +0000",
-      "timezone": -18000,
-      "baby": {
-        "BCObjectType": "Baby",
-        "dob": "2026-10-01 12:00:00 +0000",
-        "gender": "true",
-        "name": "Test Baby",
-        "newFlage": "false",
-        "objectID": "BBBBBBBB-0000-4000-8000-000000000001",
-        "pictureName": "",
-        "timestamp": "1970-01-01 00:00:00 +0000"
-      }
+      "timezone": -18000
     }
   },
   {
@@ -290,6 +280,32 @@
         "pictureName": "",
         "timestamp": "1970-01-01 00:00:00 +0000"
       }
+    }
+  },
+  {
+    "label": "P1 pump add, total only (invented, real shape)",
+    "opcode": 0,
+    "sync_id": 11,
+    "transaction": "eyJCQ09iamVjdFR5cGUiOiJQdW1wIiwiYW1vdW50Ijp7IkJDT2JqZWN0VHlwZSI6IlZvbHVtZU1lYXN1cmUiLCJlbmdsaXNoTWVhc3VyZSI6InRydWUiLCJ2YWx1ZSI6NH0sImZpbmlzaFNpZGUiOjEsImxlZnREdXJhdGlvbiI6NSwibmV3RmxhZ2UiOiJ0cnVlIiwibm90ZSI6IlAxIiwib2JqZWN0SUQiOiJDQUZFMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMTEiLCJwaWN0dXJlTG9hZGVkIjoidHJ1ZSIsInBpY3R1cmVOb3RlIjpbXSwicmlnaHREdXJhdGlvbiI6Nywic2lkZXMiOjAsInRpbWUiOiIyMDI2LTEwLTI2IDE3OjEwOjAwICswMDAwIiwidGltZXN0YW1wIjoiMjAyNi0xMC0yNiAxNzoyMjozMCArMDAwMCIsInRpbWV6b25lIjotMTgwMDB9",
+    "payload": {
+      "BCObjectType": "Pump",
+      "amount": {
+        "BCObjectType": "VolumeMeasure",
+        "englishMeasure": "true",
+        "value": 4
+      },
+      "finishSide": 1,
+      "leftDuration": 5,
+      "newFlage": "true",
+      "note": "P1",
+      "objectID": "CAFE0000-0000-4000-8000-000000000011",
+      "pictureLoaded": "true",
+      "pictureNote": [],
+      "rightDuration": 7,
+      "sides": 0,
+      "time": "2026-10-26 17:10:00 +0000",
+      "timestamp": "2026-10-26 17:22:30 +0000",
+      "timezone": -18000
     }
   }
 ]

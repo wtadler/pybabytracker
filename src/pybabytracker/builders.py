@@ -64,9 +64,9 @@ class Draft[R: Record]:
     """A validated record waiting for an ID, a baby, and a write timestamp."""
 
     record_type: type[R]
-    _build: Callable[[str, Baby, datetime], R]
+    _build: Callable[[str, Baby | None, datetime], R]
 
-    def build(self, object_id: str, baby: Baby, timestamp: datetime) -> R:
+    def build(self, object_id: str, baby: Baby | None, timestamp: datetime) -> R:
         return self._build(object_id, baby, timestamp)
 
 
@@ -137,10 +137,10 @@ def _side(finish_side: int | None, left_used: bool, right_used: bool) -> int:
 
 
 def _base(
-    object_id: str, baby: Baby, timestamp: datetime, event: datetime, tz: int, text: str
+    object_id: str, baby: Baby | None, timestamp: datetime, event: datetime, tz: int, text: str
 ) -> dict[str, Any]:
-    """The fields every new record carries."""
-    return {
+    """The fields every new record carries; ``baby`` is left out when there is none."""
+    common: dict[str, Any] = {
         "object_id": object_id,
         "time": event,
         "timestamp": timestamp,
@@ -149,8 +149,10 @@ def _base(
         "picture_note": [],
         "new_flag": "true",
         "picture_loaded": "true",
-        "baby": baby,
     }
+    if baby is not None:
+        common["baby"] = baby
+    return common
 
 
 def draft_diaper(
@@ -160,7 +162,7 @@ def draft_diaper(
         raise ValueError(f"unknown diaper status: {status!r}")
     event, tz, text = _common(time, timezone_offset, note)
 
-    def build(object_id: str, baby: Baby, timestamp: datetime) -> Diaper:
+    def build(object_id: str, baby: Baby | None, timestamp: datetime) -> Diaper:
         return Diaper(
             **_base(object_id, baby, timestamp, event, tz, text),
             status=status,
@@ -189,7 +191,7 @@ def draft_bottle[R: (Formula, Pumped)](
         raise ValueError("a bottle's volume must be more than zero")  # also after rounding
     event, tz, text = _common(time, timezone_offset, note)
 
-    def build(object_id: str, baby: Baby, timestamp: datetime) -> R:
+    def build(object_id: str, baby: Baby | None, timestamp: datetime) -> R:
         return record_type(
             **_base(object_id, baby, timestamp, event, tz, text),
             amount=_measure(checked),
@@ -227,7 +229,7 @@ def draft_nursing(
         start = end - total
     event, tz, text = _common(start, timezone_offset, note)
 
-    def build(object_id: str, baby: Baby, timestamp: datetime) -> Nursing:
+    def build(object_id: str, baby: Baby | None, timestamp: datetime) -> Nursing:
         return Nursing(
             **_base(object_id, baby, timestamp, event, tz, text),
             left_duration=left,
@@ -255,7 +257,7 @@ def draft_sleep(
     minutes = sleep_minutes(start, end)
     event, tz, text = _common(start, timezone_offset, note)
 
-    def build(object_id: str, baby: Baby, timestamp: datetime) -> Sleep:
+    def build(object_id: str, baby: Baby | None, timestamp: datetime) -> Sleep:
         return Sleep(
             **_base(object_id, baby, timestamp, event, tz, text),
             duration=minutes,
@@ -286,7 +288,7 @@ def draft_sleep_start(
         raise ValueError("a sleep can't have started more than 24 hours ago")
     event, tz, text = _common(begin, timezone_offset, note)
 
-    def build(object_id: str, baby: Baby, timestamp: datetime) -> Sleep:
+    def build(object_id: str, baby: Baby | None, timestamp: datetime) -> Sleep:
         return Sleep(
             **_base(object_id, baby, timestamp, event, tz, text),
             duration=0,
@@ -345,6 +347,7 @@ def ended_sleep_payload(sleep: Sleep, minutes: int, timestamp: datetime) -> dict
 
 def draft_pump(
     *,
+    amount: Volume | None,
     left_volume: Volume | None,
     right_volume: Volume | None,
     left_minutes: int,
@@ -354,19 +357,31 @@ def draft_pump(
     timezone_offset: int | None,
     note: str,
 ) -> Draft[Pump]:
-    """A pumping session. ``amount`` is the sum of the sides; a side left out is written as 0
-    in the other side's unit. ``time`` is the session's start."""
-    if left_volume is None and right_volume is None:
+    """A pumping session, which belongs to the account (no baby). Give the total as ``amount``,
+    or the volume of one or both sides. With only a total the payload has no per-side amounts,
+    like the app's own pump; with sides, ``amount`` is their sum and a side left out is written
+    as 0 in the other side's unit. ``time`` is the session's start."""
+    if amount is not None and (left_volume is not None or right_volume is not None):
+        raise ValueError("give a pump's total volume or its side volumes, not both")
+    if amount is None and left_volume is None and right_volume is None:
         raise ValueError("a pump needs a volume for at least one side")
-    left_v = _checked(left_volume, "left_volume") if left_volume is not None else None
-    right_v = _checked(right_volume, "right_volume") if right_volume is not None else None
-    units = {v.unit for v in (left_v, right_v) if v is not None}
-    if len(units) != 1:
-        raise ValueError("both sides of a pump must use the same unit")
-    unit = units.pop()
-    left_amount = left_v.value if left_v is not None else 0
-    right_amount = right_v.value if right_v is not None else 0
-    total = round(left_amount + right_amount, 6)
+    per_side = amount is None
+    if amount is not None:
+        total_v = _checked(amount, "amount")
+        unit = total_v.unit
+        left_amount: int | float = 0
+        right_amount: int | float = 0
+        total = total_v.value
+    else:
+        left_v = _checked(left_volume, "left_volume") if left_volume is not None else None
+        right_v = _checked(right_volume, "right_volume") if right_volume is not None else None
+        units = {v.unit for v in (left_v, right_v) if v is not None}
+        if len(units) != 1:
+            raise ValueError("both sides of a pump must use the same unit")
+        unit = units.pop()
+        left_amount = left_v.value if left_v is not None else 0
+        right_amount = right_v.value if right_v is not None else 0
+        total = round(left_amount + right_amount, 6)
     if total <= 0:
         raise ValueError("a pump's total volume must be more than zero")
     left = _minutes(left_minutes, "left_minutes")
@@ -374,16 +389,24 @@ def draft_pump(
     side = _side(finish_side, left_amount > 0 or left > 0, right_amount > 0 or right > 0)
     event, tz, text = _common(time, timezone_offset, note)
 
-    def build(object_id: str, baby: Baby, timestamp: datetime) -> Pump:
+    def build(object_id: str, baby: Baby | None, timestamp: datetime) -> Pump:
+        # A pump never carries a baby, whatever the caller passes.
+        sides: dict[str, Any] = (
+            {
+                "left_amount": _measure(Volume(left_amount, unit)),
+                "right_amount": _measure(Volume(right_amount, unit)),
+            }
+            if per_side
+            else {}
+        )
         return Pump(
-            **_base(object_id, baby, timestamp, event, tz, text),
+            **_base(object_id, None, timestamp, event, tz, text),
             amount=_measure(Volume(total, unit)),
-            left_amount=_measure(Volume(left_amount, unit)),
-            right_amount=_measure(Volume(right_amount, unit)),
+            **sides,
             left_duration=left,
             right_duration=right,
             finish_side=side,
-            # Always 0 on the capture, which pumped both sides; its meaning isn't known.
+            # Always 0 on every capture; its meaning isn't known.
             sides=0,
         )
 

@@ -61,7 +61,8 @@ CAPTURED_START_ID = "CAFE0000-0000-4000-8000-000000000005"
 
 def captured_entry(label_prefix: str) -> dict[str, Any]:
     [entry] = [e for e in CAPTURE if e["label"].startswith(label_prefix)]
-    return entry
+    result: dict[str, Any] = entry
+    return result
 
 
 def without_ignored(payload: dict[str, Any]) -> dict[str, Any]:
