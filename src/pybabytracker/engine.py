@@ -227,6 +227,7 @@ class SyncEngine:
         self._last_posted = 0
         self._pending: _Pending | None = None
         self._created: set[str] = set()
+        self._add_numbers: dict[str, int] = {}  # object_id -> number of this device's add
         self._lock = asyncio.Lock()
 
     @property
@@ -249,7 +250,20 @@ class SyncEngine:
         return frozenset(self._created)
 
     def own_writes(self) -> list[tuple[str, int]]:
-        return []
+        """This device's adds that still exist, as ``(object_id, sync_id)``, oldest first.
+
+        ``sync_id`` is the number of this device's add (the newest one, if the same record was
+        added again). It doesn't change when another device edits the record, so the last pair
+        is always the record this device added most recently. State saved before numbers were
+        kept loads with the number recovered from the record's version when this device's add is
+        still its newest version, and 0 (oldest) otherwise; a record without a number sorts
+        among the 0s by ``object_id``. Cheap: no state is encoded.
+        """
+        numbers = self._add_numbers
+        return sorted(
+            ((i, numbers.get(i, 0)) for i in self._created if i in self._records),
+            key=lambda pair: (pair[1], pair[0]),
+        )
 
     async def add_diaper(
         self,
@@ -507,6 +521,7 @@ class SyncEngine:
             )
         if device_uuid == self._device_uuid and transaction.op_code == OP_ADD:
             self._created.add(record.object_id)
+            self._add_numbers[record.object_id] = transaction.sync_id
         stamp = record.timestamp.timestamp() if record.timestamp is not None else 0.0
         version = _Version(stamp, _OP_RANKS[transaction.op_code], device_uuid, transaction.sync_id)
         if transaction.op_code == OP_DELETE:
@@ -537,6 +552,7 @@ class SyncEngine:
                 return  # the record was edited after this delete
             del self._records[object_id]
             del self._versions[object_id]
+            self._add_numbers.pop(object_id, None)
         tombstone = self._tombstones.get(object_id)
         if tombstone is None or _newer(version, tombstone):
             self._tombstones[object_id] = version
@@ -572,6 +588,7 @@ class SyncEngine:
             "last_posted": self._last_posted,
             "pending": self._pending.to_dict() if self._pending is not None else None,
             "created": sorted(self._created),
+            "created_numbers": dict(sorted(self._add_numbers.items())),
             "last_seen": dict(sorted(self._last_seen.items())),
             "records": [
                 {"version": self._versions[i].to_dict(), "payload": r.to_payload()}
@@ -597,8 +614,9 @@ class SyncEngine:
         version 3 as saved by an early write-records build) load records as adds and tombstones
         as deletes. Versions without write state (1, 2, and version 3 as saved by the op-rank
         build) load with none: pass ``device_uuid`` to write with them. Every newer field is
-        read with a default, so either version 3 shape loads. A ``device_uuid`` that differs
-        from the saved one raises ``ValueError``.
+        read with a default, so either version 3 shape loads. Version 4 state saved before
+        ``created_numbers`` existed loads too: see ``own_writes`` for how its order is
+        recovered. A ``device_uuid`` that differs from the saved one raises ``ValueError``.
         """
         version = data.get("version")
         if version not in (1, 2, 3, STATE_VERSION):
@@ -616,6 +634,11 @@ class SyncEngine:
         pending = data.get("pending")
         engine._pending = _Pending.from_dict(pending) if pending else None
         engine._created = {str(i) for i in data.get("created", [])}
+        engine._add_numbers = {
+            str(i): int(n)
+            for i, n in data.get("created_numbers", {}).items()
+            if str(i) in engine._created
+        }
         for entry in data["records"]:
             if version == 1:
                 record = decode_payload(entry)
@@ -626,6 +649,14 @@ class SyncEngine:
                 stored = _Version.from_dict(entry["version"], _RANK_ADD)
             engine._records[record.object_id] = record
             engine._versions[record.object_id] = stored
+            if (
+                record.object_id in engine._created
+                and record.object_id not in engine._add_numbers
+                and stored.device_uuid == engine._device_uuid
+                and stored.rank == _RANK_ADD
+            ):
+                # State saved before numbers were kept: this device's add is still the version.
+                engine._add_numbers[record.object_id] = stored.sync_id
         for entry in data.get("tombstones", []):
             engine._tombstones[str(entry["object_id"])] = _Version.from_dict(
                 entry["version"], _RANK_DELETE

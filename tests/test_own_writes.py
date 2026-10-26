@@ -10,7 +10,7 @@ import pytest
 from conftest import PROBE_UUID
 from factories import payload_for
 from fake_server import FakeSyncServer
-from test_writes import (  # noqa: F401  (quick_client is a fixture)
+from test_writes import (  # noqa: F401  (quick_client is a fixture; F811 at use sites)
     PHONE,
     add,
     decode,
@@ -34,7 +34,7 @@ from pybabytracker import (
     RawTransaction,
     SyncEngine,
 )
-from pybabytracker.models import encode_transaction, decode_payload
+from pybabytracker.models import decode_payload, encode_transaction
 
 LATER = "2030-01-01 00:00:00 +0000"
 
@@ -226,7 +226,8 @@ async def test_local_apply_matches_a_replay_of_the_log(
 
 
 async def test_a_post_that_lands_late_keeps_its_own_number_and_place(
-    quick_client: BabyTrackerClient, fake_server: FakeSyncServer
+    quick_client: BabyTrackerClient,
+    fake_server: FakeSyncServer,  # noqa: F811
 ) -> None:
     seed(fake_server)
     engine = await synced_engine(quick_client)
@@ -243,7 +244,8 @@ async def test_a_post_that_lands_late_keeps_its_own_number_and_place(
 
 
 async def test_a_failed_post_that_never_landed_is_not_listed_and_its_number_is_reused(
-    quick_client: BabyTrackerClient, fake_server: FakeSyncServer
+    quick_client: BabyTrackerClient,
+    fake_server: FakeSyncServer,  # noqa: F811
 ) -> None:
     seed(fake_server)
     engine = await synced_engine(quick_client)
