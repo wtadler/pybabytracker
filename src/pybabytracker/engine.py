@@ -27,7 +27,7 @@ Rules:
   empty, or a read brings nothing new (a warning, so a stuck server can't loop forever). A
   fresh ``SyncEngine`` replays every log, so it recovers skipped payloads once a library fix ships.
 
-Writes (``add_diaper``, ``delete_record``) post as this engine's own device:
+Writes (the ``add_*`` methods and ``delete_record``) post as this engine's own device:
 
 - A write needs a completed sync (for the baby record and this device's numbers) and a client
   signed in as the engine's ``device_uuid``. Otherwise it's refused before any request.
@@ -77,6 +77,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+from .builders import Draft, draft_bottle, draft_diaper, draft_nursing, draft_pump, draft_sleep
 from .client import Device, RawTransaction
 from .exceptions import (
     AuthenticationError,
@@ -91,17 +92,20 @@ from .exceptions import (
     WriteOutcomeUnknownError,
 )
 from .models import (
-    DIAPER_DIRTY,
-    DIAPER_MIXED,
-    DIAPER_WET,
     OP_ADD,
     OP_DELETE,
     OP_UPDATE,
     RECORD_TYPES,
     Baby,
     Diaper,
+    Formula,
+    Nursing,
+    Pump,
+    Pumped,
     Record,
+    Sleep,
     UnknownRecord,
+    Volume,
     decode_payload,
     decode_transaction,
     encode_transaction,
@@ -282,11 +286,129 @@ class SyncEngine:
         defaults to now. ``timezone_offset`` (seconds east of UTC) defaults to ``time``'s offset.
         ``object_id`` defaults to a new uppercase UUID4. Pass the same one to retry a write that
         raised: if that write landed after all, its record is returned and nothing is posted.
+        Every ``add_*`` method shares these rules. Bad input raises ``ValueError`` before any
+        request.
         """
-        if status not in (DIAPER_WET, DIAPER_DIRTY, DIAPER_MIXED):
-            raise ValueError(f"unknown diaper status: {status!r}")
-        if time is not None and time.utcoffset() is None:
-            raise ValueError("time must be timezone-aware")
+        draft = draft_diaper(status, time=time, timezone_offset=timezone_offset, note=note)
+        return await self._add(target, baby_id, draft, object_id)
+
+    async def add_formula(
+        self,
+        target: WriteTarget,
+        baby_id: str,
+        *,
+        volume: Volume,
+        time: datetime | None = None,
+        timezone_offset: int | None = None,
+        note: str = "",
+        object_id: str | None = None,
+    ) -> Formula:
+        """Post a formula bottle of ``volume`` (more than zero), at ``time`` (default now)."""
+        draft = draft_bottle(Formula, volume, time=time, timezone_offset=timezone_offset, note=note)
+        return await self._add(target, baby_id, draft, object_id)
+
+    async def add_pumped(
+        self,
+        target: WriteTarget,
+        baby_id: str,
+        *,
+        volume: Volume,
+        time: datetime | None = None,
+        timezone_offset: int | None = None,
+        note: str = "",
+        object_id: str | None = None,
+    ) -> Pumped:
+        """Post a bottle of pumped milk. Takes what ``add_formula`` takes."""
+        draft = draft_bottle(Pumped, volume, time=time, timezone_offset=timezone_offset, note=note)
+        return await self._add(target, baby_id, draft, object_id)
+
+    async def add_nursing(
+        self,
+        target: WriteTarget,
+        baby_id: str,
+        *,
+        left_minutes: int = 0,
+        right_minutes: int = 0,
+        finish_side: int | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        timezone_offset: int | None = None,
+        note: str = "",
+        object_id: str | None = None,
+    ) -> Nursing:
+        """Post a finished nursing session of whole minutes per side (at least one in total).
+
+        The record's ``time`` is the session's start, as in the capture: ``start_time`` if
+        given, else ``end_time`` minus the total minutes, else now minus the total minutes
+        (the session just ended). Give at most one of them. ``finish_side`` (``SIDE_LEFT`` or
+        ``SIDE_RIGHT``) defaults to the last side used, right when both were.
+        """
+        draft = draft_nursing(
+            left_minutes=left_minutes,
+            right_minutes=right_minutes,
+            finish_side=finish_side,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_offset=timezone_offset,
+            note=note,
+        )
+        return await self._add(target, baby_id, draft, object_id)
+
+    async def add_sleep(
+        self,
+        target: WriteTarget,
+        baby_id: str,
+        *,
+        start: datetime,
+        end: datetime,
+        timezone_offset: int | None = None,
+        note: str = "",
+        object_id: str | None = None,
+    ) -> Sleep:
+        """Post a finished sleep. ``start`` and ``end`` are aware, with ``end`` after ``start``.
+
+        The record's ``time`` is ``start``. ``duration`` is the length in whole minutes, rounded
+        half up (the capture stored about 30 seconds as 1), at least 1.
+        """
+        draft = draft_sleep(start=start, end=end, timezone_offset=timezone_offset, note=note)
+        return await self._add(target, baby_id, draft, object_id)
+
+    async def add_pump(
+        self,
+        target: WriteTarget,
+        baby_id: str,
+        *,
+        left_volume: Volume | None = None,
+        right_volume: Volume | None = None,
+        left_minutes: int = 0,
+        right_minutes: int = 0,
+        finish_side: int | None = None,
+        time: datetime | None = None,
+        timezone_offset: int | None = None,
+        note: str = "",
+        object_id: str | None = None,
+    ) -> Pump:
+        """Post a pumping session, with the volume of at least one side (one unit for both).
+
+        The total is the sum of the two sides; a side left out is written as 0. ``time`` is the
+        session's start (default now). ``finish_side`` defaults as in ``add_nursing``.
+        """
+        draft = draft_pump(
+            left_volume=left_volume,
+            right_volume=right_volume,
+            left_minutes=left_minutes,
+            right_minutes=right_minutes,
+            finish_side=finish_side,
+            time=time,
+            timezone_offset=timezone_offset,
+            note=note,
+        )
+        return await self._add(target, baby_id, draft, object_id)
+
+    async def _add[R: Record](
+        self, target: WriteTarget, baby_id: str, draft: Draft[R], object_id: str | None
+    ) -> R:
+        """The shared write path of every add: number, post, confirm, apply."""
         if object_id is not None:
             object_id = object_id.upper()
         async with self._lock:
@@ -298,36 +420,18 @@ class SyncEngine:
             if object_id is not None:
                 if object_id in self._created:
                     existing = self._records.get(object_id)
-                    if isinstance(existing, Diaper):
+                    if isinstance(existing, draft.record_type):
                         return existing  # an earlier attempt of this write landed
+                    if existing is not None:
+                        raise ValueError(
+                            f"object_id {object_id} belongs to a record of another type"
+                        )
                     raise RecordNotFoundError(f"record {object_id} was added and then deleted")
                 if object_id in self._records or object_id in self._tombstones:
                     raise ValueError(f"object_id {object_id} belongs to another record")
-            event = time if time is not None else datetime.now().astimezone()
-            offset = event.utcoffset()
-            assert offset is not None
-            diaper = Diaper(
-                object_id=object_id or str(uuid.uuid4()).upper(),
-                time=event.astimezone(UTC).replace(microsecond=0),
-                timestamp=_now(),
-                timezone=(
-                    timezone_offset if timezone_offset is not None else int(offset.total_seconds())
-                ),
-                status=status,
-                note=note,
-                picture_note=[],
-                new_flag="true",
-                picture_loaded="true",
-                baby=baby,
-                # What the app filled in on the captured add (PROTOCOL.md) with only a type set.
-                amount=2,
-                pee_color=5,
-                poo_color=5,
-                texture=5,
-                flag=0,
-            )
-            await self._send(target, number, OP_ADD, encode_transaction(diaper))
-            return diaper
+            record = draft.build(object_id or str(uuid.uuid4()).upper(), baby, _now())
+            await self._send(target, number, OP_ADD, encode_transaction(record))
+            return record
 
     async def delete_record(self, target: WriteTarget, object_id: str) -> None:
         """Post a delete of a record this device created, carrying the full record.

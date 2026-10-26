@@ -61,6 +61,36 @@ The engine posts as its own device (`device_uuid`, which must match the client's
   that state. Use one device ID per running process; two processes writing as one device can
   collide on a number while `LastSyncID` lags.
 
+### Record types you can add
+
+Every add shares the rules above (numbering, pending posts, `object_id` retries, local apply),
+and bad input raises `ValueError` before any request. Payloads match the iPad capture key for
+key.
+
+| Method | Writes | Notes |
+|---|---|---|
+| `add_diaper(client, baby_id, status, ...)` | `Diaper` | `DIAPER_WET`, `DIAPER_DIRTY`, `DIAPER_MIXED` |
+| `add_formula(client, baby_id, volume=, ...)` | `Formula` | volume more than zero |
+| `add_pumped(client, baby_id, volume=, ...)` | `Pumped` | a bottle of pumped milk |
+| `add_nursing(client, baby_id, left_minutes=, right_minutes=, ...)` | `Nursing` | a finished session |
+| `add_sleep(client, baby_id, start=, end=, ...)` | `Sleep` | a finished sleep |
+| `add_pump(client, baby_id, left_volume=, right_volume=, ...)` | `Pump` | a pumping session |
+
+- Volumes are `Volume(value, "oz")` or `Volume(value, "ml")` and are written as a
+  `VolumeMeasure`: `englishMeasure` `"true"` for ounces, `"false"` for milliliters. Only ounces
+  have been captured; the milliliter form is an assumption. Whole numbers are written as
+  integers.
+- `time` is when the activity started (or, for a bottle or diaper, when it happened), written in
+  UTC. `timezone_offset` (seconds east of UTC) defaults to the offset of the time given.
+- Nursing: `time` is the session's start, as in the capture. Give `start_time`, or `end_time`
+  (start is end minus the total minutes), or neither (the session just ended). `finish_side` is
+  `SIDE_LEFT` or `SIDE_RIGHT`, defaulting to the last side used (right when both were).
+- Sleep: `time` is `start`. `duration` is whole minutes: the length rounded half up (the capture
+  stored about 30 seconds as 1), and at least 1, because a duration of 0 means a sleep in
+  progress. `end` must be after `start`.
+- Pump: `amount` is the sum of the two sides; a side left out is written as 0 in the other's
+  unit, and both sides must use one unit. `sides` is written as 0, as captured.
+
 The service lists a device only after its first post; on the test account, the dev device
 appeared with `LastSyncID` 1 right after its first add, with no confirmation step.
 
