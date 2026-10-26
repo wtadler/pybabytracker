@@ -181,6 +181,19 @@ def test_missing_object_id_raises_a_decode_error() -> None:
         decode_transaction(encode_b64(payload))
 
 
-def test_unparseable_time_raises_a_decode_error() -> None:
-    with pytest.raises(TransactionDecodeError):
-        decode_transaction(encode_b64(payload_for("Diaper", time="last tuesday")))
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"time": "2026-10-25 15:40:49.5 +0000"},
+        {"time": ""},
+        {"time": "last tuesday"},
+        {"baby": "not an object"},
+    ],
+)
+def test_a_known_type_with_an_unexpected_value_is_kept_raw(overrides: dict[str, Any]) -> None:
+    payload = payload_for("Sleep", **overrides)
+    record = decode_transaction(encode_b64(payload))
+    assert isinstance(record, UnknownRecord)
+    assert record.record_type == "Sleep"
+    assert record.to_payload() == payload
+    assert _round_trip(payload) == payload

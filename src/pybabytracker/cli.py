@@ -110,7 +110,10 @@ class DeviceProbe:
     device_name: str
     last_sync_id: int
     returned: int
+    lowest_returned: int
     highest_returned: int
+    # How many more came back from a follow-up read past the highest number, if one was made.
+    follow_up_returned: int | None = None
 
 
 @dataclass(frozen=True)
@@ -125,26 +128,54 @@ async def probe_history(client: BabyTrackerClient, probe_device_uuid: str) -> Pr
     probes: list[DeviceProbe] = []
     for device in sorted(devices, key=lambda d: d.device_uuid):
         transactions = await client.get_transactions(device.device_uuid, 0)
+        numbers = [t.sync_id for t in transactions]
+        highest = max(numbers, default=0)
+        follow_up: int | None = None
+        if highest < device.last_sync_id:
+            follow_up = len(await client.get_transactions(device.device_uuid, highest))
         probes.append(
             DeviceProbe(
                 device.device_uuid,
                 device.device_name,
                 device.last_sync_id,
                 len(transactions),
-                max((t.sync_id for t in transactions), default=0),
+                min(numbers, default=0),
+                highest,
+                follow_up,
             )
         )
     listed = any(d.device_uuid == probe_device_uuid for d in devices)
     return ProbeReport(probes, listed)
 
 
+def probe_verdict(probe: DeviceProbe) -> str:
+    """Name what the read from 0 showed: full, paged, trimmed, or gaps."""
+    if probe.last_sync_id == 0 and probe.returned == 0:
+        return "full history (the log is empty)"
+    if probe.returned == 0:
+        return "nothing came back although LastSyncID is above 0"
+    parts: list[str] = []
+    if probe.highest_returned < probe.last_sync_id:
+        if probe.follow_up_returned:
+            parts.append(f"paged ({probe.returned} per request)")
+        else:
+            parts.append("the log stops below LastSyncID")
+    if probe.lowest_returned > 1:
+        parts.append(f"starts at {probe.lowest_returned} (older numbers trimmed)")
+    if not parts:
+        if probe.returned == probe.last_sync_id:
+            return "full history"
+        return "gaps (every number from 1 to LastSyncID is present only partly)"
+    return "; ".join(parts)
+
+
 def format_probe(report: ProbeReport) -> list[str]:
     lines = []
     for probe in report.devices:
-        verdict = "full history" if probe.returned == probe.last_sync_id else "NOT the full history"
         lines.append(
             f"{probe.device_name} ({probe.device_uuid}): returned {probe.returned} of "
-            f"LastSyncID {probe.last_sync_id}, highest number {probe.highest_returned}: {verdict}"
+            f"LastSyncID {probe.last_sync_id}, lowest {probe.lowest_returned}, "
+            f"highest {probe.highest_returned}: {probe_verdict(probe)}"
         )
     answer = "yes" if report.probe_device_listed else "no"
     lines.append(f"{PROBE_DEVICE_NAME} appears in the device list: {answer}")
@@ -178,7 +209,13 @@ async def run_cli(argv: Sequence[str], environ: Mapping[str, str], out: TextIO, 
         return 2
     device_id = load_or_create_device_id(args.device_file)
     async with BabyTrackerClient(
-        email, password, device_id, PROBE_DEVICE_NAME, base_url=args.base_url
+        email,
+        password,
+        device_id,
+        PROBE_DEVICE_NAME,
+        base_url=args.base_url,
+        # A custom base URL means a local test server, which may be an IP address.
+        unsafe_cookie_jar=args.base_url != DEFAULT_BASE_URL,
     ) as client:
         try:
             if args.probe_history:

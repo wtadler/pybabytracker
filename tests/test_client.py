@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import socket
 
 import aiohttp
@@ -278,6 +279,7 @@ async def test_a_session_the_client_made_itself_is_closed_on_close(
         PROBE_UUID,
         "Test Device",
         base_url=fake_server.base_url,
+        unsafe_cookie_jar=True,
     )
     await client.get_devices()
     own_session = client._session
@@ -285,3 +287,41 @@ async def test_a_session_the_client_made_itself_is_closed_on_close(
     assert not own_session.closed
     await client.close()
     assert own_session.closed
+
+
+async def test_concurrent_401s_sign_in_only_once(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    fake_server.add_device(PHONE)
+    await client.get_devices()
+    fake_server.expire_sessions()
+
+    results = await asyncio.gather(*(client.get_devices() for _ in range(4)))
+
+    assert all(PHONE in {d.device_uuid for d in devices} for devices in results)
+    assert len(fake_server.calls("POST", "/session")) == 2
+
+
+async def test_malformed_log_entries_with_a_sync_id_become_skippable_placeholders(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    fake_server.add_device(PHONE)
+    fake_server.add_transaction(PHONE, 0, payload_for("Diaper"))
+    fake_server.devices[PHONE].log.append({"SyncID": 2, "Transaction": None})
+    fake_server.devices[PHONE].log.append({"OPCode": 0, "Transaction": "x"})  # no SyncID
+    fake_server.add_transaction(PHONE, 0, payload_for("Diaper", "ID-3"), sync_id=3)
+
+    transactions = await client.get_transactions(PHONE, 0)
+
+    assert [t.sync_id for t in transactions] == [1, 2, 3]
+    assert transactions[1].op_code == -1
+    assert transactions[1].transaction == ""
+
+
+async def test_a_log_where_no_entry_has_a_usable_sync_id_raises(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    fake_server.add_device(PHONE)
+    fake_server.devices[PHONE].log.append({"nonsense": True})
+    with pytest.raises(ProtocolError):
+        await client.get_transactions(PHONE, 0)

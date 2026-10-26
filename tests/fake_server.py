@@ -32,7 +32,7 @@ class FakeDevice:
     def last_sync_id(self) -> int:
         if self.last_sync_override is not None:
             return self.last_sync_override
-        return max((int(entry["SyncID"]) for entry in self.log), default=0)
+        return max((int(entry.get("SyncID", 0)) for entry in self.log), default=0)
 
 
 class FakeSyncServer:
@@ -58,6 +58,10 @@ class FakeSyncServer:
         self.delay = 0.0
         # Status to return from POST /session (None means normal behavior).
         self.session_status: int | None = None
+        # Return at most this many log entries per request.
+        self.page_size: int | None = None
+        # Leave out log entries numbered below this (an older history the server trimmed).
+        self.trim_below: int | None = None
         self.raw_devices_body: str | None = None
         self.base_url = ""
 
@@ -165,4 +169,11 @@ class FakeSyncServer:
         if device is None:
             return self._json([])
         since = int(request.match_info["since"])
-        return self._json([e for e in device.log if int(e["SyncID"]) > since])
+        entries = [e for e in device.log if "SyncID" not in e or int(e["SyncID"]) > since]
+        if self.trim_below is not None:
+            entries = [
+                e for e in entries if "SyncID" not in e or int(e["SyncID"]) >= self.trim_below
+            ]
+        if self.page_size is not None:
+            entries = entries[: self.page_size]
+        return self._json(entries)

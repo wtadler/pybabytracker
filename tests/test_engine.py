@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 from typing import Any
@@ -420,3 +421,158 @@ def test_latest_records_picks_the_newest_of_each_type_for_a_baby() -> None:
     assert latest["Diaper"].object_id == rid(2)
     assert engine.latest_records(BABY_TWO_ID)["Diaper"].object_id == rid(5)
     assert engine.latest_records("no-such-baby") == {}
+
+
+# --- cross-device merge: order independence, tombstones ---------------------------------
+
+LOW = "AAAA0000-0000-4000-8000-000000000001"  # sorts before HIGH
+HIGH = "ZZZZ0000-0000-4000-8000-000000000002"
+
+
+def ts(n: int) -> str:
+    return f"2026-10-26 12:00:{n:02d} +0000"
+
+
+@pytest.mark.parametrize(("creator", "other"), [(HIGH, LOW), (LOW, HIGH)])
+async def test_a_delete_from_another_device_wins_whatever_the_device_ids_sort_like(
+    creator: str, other: str
+) -> None:
+    logs = {
+        creator: [tx(1, OP_ADD, payload_for("Diaper", rid(1), timestamp=ts(1)))],
+        other: [tx(1, OP_DELETE, payload_for("Diaper", rid(1), timestamp=ts(2)))],
+    }
+    for reverse in (False, True):
+        source = MemorySource(logs)
+        source.reverse_listing = reverse
+        engine = SyncEngine()
+        await engine.sync(source)
+        assert rid(1) not in engine.records
+
+
+@pytest.mark.parametrize(("creator", "editor"), [(HIGH, LOW), (LOW, HIGH)])
+async def test_a_later_edit_from_another_device_wins_whatever_the_device_ids_sort_like(
+    creator: str, editor: str
+) -> None:
+    logs = {
+        creator: [tx(1, OP_ADD, payload_for("Diaper", rid(1), note="old", timestamp=ts(1)))],
+        editor: [tx(1, OP_UPDATE, payload_for("Diaper", rid(1), note="new", timestamp=ts(2)))],
+    }
+    engine = SyncEngine()
+    await engine.sync(MemorySource(logs))
+    assert engine.records[rid(1)].note == "new"
+
+
+def test_a_three_device_backfill_with_deletes_in_both_directions_is_order_independent() -> None:
+    a, b, c = (f"{x * 4}0000-0000-4000-8000-00000000000{i}" for i, x in enumerate("ABC", 1))
+    logs = {
+        a: [
+            tx(1, OP_ADD, payload_for("Diaper", rid(1), timestamp=ts(1))),
+            tx(2, OP_ADD, payload_for("Diaper", rid(2), timestamp=ts(2))),
+            tx(3, OP_DELETE, payload_for("Diaper", rid(3), timestamp=ts(6))),  # a < c deletes c's
+        ],
+        b: [
+            tx(1, OP_DELETE, payload_for("Diaper", rid(1), timestamp=ts(5))),
+            tx(2, OP_UPDATE, payload_for("Diaper", rid(2), note="edited", timestamp=ts(7))),
+            tx(3, OP_ADD, payload_for("Diaper", rid(4), timestamp=ts(4))),
+        ],
+        c: [
+            tx(1, OP_ADD, payload_for("Diaper", rid(3), timestamp=ts(3))),
+            tx(2, OP_DELETE, payload_for("Diaper", rid(4), timestamp=ts(8))),  # c > b deletes b's
+        ],
+    }
+    states = []
+    for order in itertools.permutations(logs):
+        engine = SyncEngine()
+        for device in order:
+            engine.apply(device, logs[device])
+        assert set(engine.records) == {rid(2)}
+        assert engine.records[rid(2)].note == "edited"
+        states.append(engine.to_dict())
+    assert all(state == states[0] for state in states)
+
+
+def test_a_delete_in_an_earlier_sync_than_its_add_survives_a_save_and_load() -> None:
+    engine = SyncEngine()
+    engine.apply(LOW, [tx(1, OP_DELETE, payload_for("Diaper", rid(1), timestamp=ts(2)))])
+    assert rid(1) not in engine.records
+
+    saved = json.loads(json.dumps(engine.to_dict()))
+    assert len(saved["tombstones"]) == 1
+    restored = SyncEngine.from_dict(saved)
+    restored.apply(HIGH, [tx(1, OP_ADD, payload_for("Diaper", rid(1), timestamp=ts(1)))])
+
+    assert rid(1) not in restored.records
+    assert restored.to_dict()["tombstones"] == saved["tombstones"]
+
+
+def test_an_add_with_an_equal_timestamp_does_not_bring_a_deleted_record_back() -> None:
+    engine = SyncEngine()
+    engine.apply(LOW, [tx(1, OP_DELETE, payload_for("Diaper", rid(1), timestamp=ts(2)))])
+    engine.apply(HIGH, [tx(1, OP_ADD, payload_for("Diaper", rid(1), timestamp=ts(2)))])
+    assert rid(1) not in engine.records
+
+
+def test_an_add_with_a_strictly_newer_timestamp_brings_a_deleted_record_back() -> None:
+    engine = SyncEngine()
+    engine.apply(LOW, [tx(1, OP_DELETE, payload_for("Diaper", rid(1), timestamp=ts(2)))])
+    engine.apply(HIGH, [tx(1, OP_ADD, payload_for("Diaper", rid(1), note="back", timestamp=ts(3)))])
+    assert engine.records[rid(1)].note == "back"
+    assert not SyncEngine.from_dict(engine.to_dict()).to_dict()["tombstones"]
+
+
+def test_a_delete_older_than_a_later_edit_from_another_device_loses() -> None:
+    engine = SyncEngine()
+    engine.apply(
+        HIGH, [tx(1, OP_ADD, payload_for("Diaper", rid(1), note="edited", timestamp=ts(5)))]
+    )
+    engine.apply(LOW, [tx(1, OP_DELETE, payload_for("Diaper", rid(1), timestamp=ts(2)))])
+    assert engine.records[rid(1)].note == "edited"
+
+
+def test_a_version_1_state_loads_with_no_tombstones() -> None:
+    old = {
+        "version": 1,
+        "last_seen": {LOW: 1},
+        "records": [payload_for("Diaper", rid(1), note="kept")],
+    }
+    engine = SyncEngine.from_dict(old)
+    assert engine.records[rid(1)].note == "kept"
+    assert engine.to_dict()["version"] == 2
+    assert engine.to_dict()["tombstones"] == []
+    engine.apply(
+        HIGH,
+        [
+            tx(
+                1,
+                OP_UPDATE,
+                payload_for("Diaper", rid(1), note="later", timestamp="2026-10-27 00:00:00 +0000"),
+            )
+        ],
+    )
+    assert engine.records[rid(1)].note == "later"
+
+
+# --- a known type with an unexpected value is kept raw ------------------------------------
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"time": "2026-10-25 15:40:49.5 +0000"}, {"time": ""}, {"baby": "not an object"}],
+)
+def test_an_unexpected_field_value_keeps_the_record_raw_until_a_valid_update(
+    overrides: dict[str, Any], caplog: pytest.LogCaptureFixture
+) -> None:
+    engine = SyncEngine()
+    odd = payload_for("Sleep", rid(1), duration=60, **overrides)
+    with caplog.at_level(logging.WARNING, logger="pybabytracker"):
+        result = engine.apply(LOW, [tx(1, OP_ADD, odd)])
+    assert result.applied == 1
+    raw = engine.records[rid(1)]
+    assert isinstance(raw, UnknownRecord)
+    assert raw.to_payload() == odd
+    assert caplog.records
+
+    engine.apply(LOW, [tx(2, OP_UPDATE, payload_for("Sleep", rid(1), duration=120))])
+    fixed = engine.records[rid(1)]
+    assert type(fixed).__name__ == "Sleep"
+    assert not isinstance(fixed, UnknownRecord)

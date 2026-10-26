@@ -221,3 +221,51 @@ async def test_probe_history_says_when_the_probe_device_did_not_join(
     )
     assert code == 0, err.getvalue()
     assert "appears in the device list: no" in out.getvalue()
+
+
+TABLET = "BBBB2222-0000-4000-8000-00000000000B"
+
+
+async def _probe(fake: FakeSyncServer, tmp_path: Path) -> str:
+    out, err = io.StringIO(), io.StringIO()
+    code = await run_cli(_args(fake, tmp_path, "--probe-history"), _env(fake), out, err)
+    assert code == 0, err.getvalue()
+    return out.getvalue()
+
+
+def _device_with(fake: FakeSyncServer, count: int) -> None:
+    fake.add_device(TABLET, "Test Tablet")
+    for i in range(count):
+        fake.add_transaction(TABLET, OP_ADD, payload_for("Diaper", rid(100 + i)))
+
+
+async def test_probe_verdict_full(fake_server: FakeSyncServer, tmp_path: Path) -> None:
+    _device_with(fake_server, 5)
+    text = await _probe(fake_server, tmp_path)
+    assert "returned 5 of LastSyncID 5, lowest 1, highest 5: full history" in text
+
+
+async def test_probe_verdict_paged(fake_server: FakeSyncServer, tmp_path: Path) -> None:
+    _device_with(fake_server, 5)
+    fake_server.page_size = 2
+    text = await _probe(fake_server, tmp_path)
+    assert "returned 2 of LastSyncID 5" in text
+    assert "paged (2 per request)" in text
+    assert "NOT the full history" not in text.split("returned 2 of")[1].splitlines()[0]
+
+
+async def test_probe_verdict_trimmed(fake_server: FakeSyncServer, tmp_path: Path) -> None:
+    _device_with(fake_server, 5)
+    fake_server.trim_below = 3
+    text = await _probe(fake_server, tmp_path)
+    assert "returned 3 of LastSyncID 5, lowest 3, highest 5" in text
+    assert "starts at 3 (older numbers trimmed)" in text
+
+
+async def test_probe_verdict_gaps(fake_server: FakeSyncServer, tmp_path: Path) -> None:
+    fake_server.add_device(TABLET, "Test Tablet")
+    for n in (1, 2, 4, 5):
+        fake_server.add_transaction(TABLET, OP_ADD, payload_for("Diaper", rid(n)), sync_id=n)
+    text = await _probe(fake_server, tmp_path)
+    assert "returned 4 of LastSyncID 5, lowest 1, highest 5" in text
+    assert "gaps" in text

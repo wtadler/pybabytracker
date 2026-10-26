@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from dataclasses import dataclass
 from types import TracebackType
 from typing import Any, Self
@@ -12,6 +14,8 @@ import aiohttp
 
 from ._version import __version__
 from .exceptions import AuthenticationError, BabyTrackerConnectionError, ProtocolError
+
+_LOGGER = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://prodapp.babytrackers.com"
 DEFAULT_TIMEOUT = 30.0
@@ -40,8 +44,15 @@ class RawTransaction:
 class BabyTrackerClient:
     """Talks to the sync service as one device in the account's sync group.
 
-    Pass ``session`` to share an ``aiohttp.ClientSession`` (the client never closes it).
+    Pass ``session`` to use an ``aiohttp.ClientSession`` (the client never closes it).
     Without one, the client makes its own on first use and closes it in ``close()``.
+
+    The service authenticates by cookie, so the session must be dedicated to this client. Don't
+    share one session between two accounts (in Home Assistant, use
+    ``async_create_clientsession``, not the shared ``async_get_clientsession``).
+
+    ``unsafe_cookie_jar`` only affects a session the client makes itself: it lets cookies from
+    an IP-address host through, which only a local test server needs.
     """
 
     def __init__(
@@ -55,6 +66,7 @@ class BabyTrackerClient:
         base_url: str = DEFAULT_BASE_URL,
         device_os_info: str = USER_AGENT,
         request_timeout: float = DEFAULT_TIMEOUT,
+        unsafe_cookie_jar: bool = False,
     ) -> None:
         self._email = email
         self._password = password
@@ -65,6 +77,9 @@ class BabyTrackerClient:
         self._timeout = aiohttp.ClientTimeout(total=request_timeout)
         self._session = session
         self._owns_session = session is None
+        self._unsafe_cookie_jar = unsafe_cookie_jar
+        self._sign_in_lock = asyncio.Lock()
+        self._generation = 0  # counts successful sign-ins
         self._signed_in = False
         self._account_id: int | None = None
 
@@ -94,6 +109,10 @@ class BabyTrackerClient:
 
     async def sign_in(self) -> int:
         """Start a session. Raises ``AuthenticationError`` if the credentials are rejected."""
+        async with self._sign_in_lock:
+            return await self._sign_in()
+
+    async def _sign_in(self) -> int:
         self._signed_in = False
         status, text = await self._send(
             "POST",
@@ -117,6 +136,7 @@ class BabyTrackerClient:
         if not isinstance(account_id, int):
             raise ProtocolError("sign-in reply had no AccountID")
         self._signed_in = True
+        self._generation += 1
         self._account_id = account_id
         return account_id
 
@@ -146,17 +166,16 @@ class BabyTrackerClient:
         data = await self._request("GET", path)
         if not isinstance(data, list):
             raise ProtocolError("transaction list was not a JSON array")
-        try:
-            return [
-                RawTransaction(
-                    sync_id=int(entry["SyncID"]),
-                    op_code=int(entry["OPCode"]),
-                    transaction=str(entry["Transaction"]),
-                )
-                for entry in data
-            ]
-        except (KeyError, TypeError, ValueError) as err:
-            raise ProtocolError(f"malformed transaction entry: {err!r}") from err
+        transactions: list[RawTransaction] = []
+        for entry in data:
+            parsed = _parse_entry(entry)
+            if parsed is None:
+                _LOGGER.warning("Dropping a log entry with no usable SyncID from %s", device_uuid)
+            else:
+                transactions.append(parsed)
+        if data and not transactions:
+            raise ProtocolError("no entry in the transaction list had a usable SyncID")
+        return transactions
 
     async def _request(self, method: str, path: str, body: Any = None) -> Any:
         """Call an endpoint that needs a session.
@@ -164,22 +183,29 @@ class BabyTrackerClient:
         A 401 means the session expired: sign in again once and retry. A second 401 raises.
         """
         if not self._signed_in:
-            await self.sign_in()
+            async with self._sign_in_lock:
+                if not self._signed_in:
+                    await self._sign_in()
         for attempt in range(2):
+            generation = self._generation
             status, text = await self._send(method, path, body)
             if status != 401:
                 _raise_for_status(status)
                 return _parse_json(text)
-            self._signed_in = False
             if attempt == 1:
+                self._signed_in = False
                 break
-            await self.sign_in()
+            async with self._sign_in_lock:
+                # Skip it if another task signed in again while this one waited.
+                if self._generation == generation:
+                    await self._sign_in()
         raise AuthenticationError("the service rejected the session even after signing in again")
 
     async def _send(self, method: str, path: str, body: Any = None) -> tuple[int, str]:
         if self._session is None:
-            # Unsafe cookie jar so a base URL that is an IP address (a local test server) works.
-            self._session = aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True))
+            self._session = aiohttp.ClientSession(
+                cookie_jar=aiohttp.CookieJar(unsafe=self._unsafe_cookie_jar)
+            )
         try:
             async with self._session.request(
                 method,
@@ -191,6 +217,28 @@ class BabyTrackerClient:
                 return response.status, await response.text()
         except (aiohttp.ClientError, TimeoutError) as err:
             raise BabyTrackerConnectionError(f"could not reach the service: {err!r}") from err
+
+
+def _parse_entry(entry: Any) -> RawTransaction | None:
+    """A log entry, or None with no usable SyncID.
+
+    An entry whose other fields are bad still comes back, as a placeholder (opcode -1, empty
+    payload) that the engine skips, so the sync number still advances past it.
+    """
+    if not isinstance(entry, dict):
+        return None
+    try:
+        sync_id = int(entry["SyncID"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    try:
+        payload = entry["Transaction"]
+        if not isinstance(payload, str):
+            raise TypeError("Transaction is not a string")
+        return RawTransaction(sync_id, int(entry["OPCode"]), payload)
+    except (KeyError, TypeError, ValueError):
+        _LOGGER.warning("Log entry %s is malformed; it will be skipped", sync_id)
+        return RawTransaction(sync_id, -1, "")
 
 
 def _raise_for_status(status: int) -> None:

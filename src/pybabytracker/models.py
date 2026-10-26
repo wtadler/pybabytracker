@@ -12,6 +12,7 @@ import base64
 import binascii
 import copy
 import json
+import logging
 from dataclasses import dataclass, field, fields
 from datetime import datetime
 from typing import Any, ClassVar, Self
@@ -22,6 +23,8 @@ from .times import format_time, parse_time
 OP_ADD = 0
 OP_UPDATE = 1
 OP_DELETE = 2
+
+_LOGGER = logging.getLogger(__name__)
 
 _TIME = "time"
 _BABY = "baby"
@@ -382,16 +385,10 @@ class UnknownRecord(Record):
         if not isinstance(object_id, str):
             raise TransactionDecodeError("payload has no string objectID")
         type_name = payload.get("BCObjectType")
-        moment: datetime | None = None
-        raw_time = payload.get("time")
-        if isinstance(raw_time, str):
-            try:
-                moment = parse_time(raw_time)
-            except ValueError:
-                moment = None
         return cls(
             object_id=object_id,
-            time=moment,
+            time=_try_parse_time(payload.get("time")),
+            timestamp=_try_parse_time(payload.get("timestamp")),
             type_name=type_name if isinstance(type_name, str) else "",
             raw=copy.deepcopy(payload),
         )
@@ -403,12 +400,37 @@ class UnknownRecord(Record):
         return {}
 
 
+def _try_parse_time(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return parse_time(value)
+    except ValueError:
+        return None
+
+
 def decode_payload(payload: dict[str, Any]) -> Record:
-    """Turn a payload dict into the matching record, or an ``UnknownRecord``."""
+    """Turn a payload dict into the matching record, or an ``UnknownRecord``.
+
+    A known type whose values don't fit the model (an odd time format, say) is also kept as an
+    ``UnknownRecord`` with a warning, as long as it has an ``objectID``, so nothing is lost and
+    the round trip stays exact.
+    """
     cls = RECORD_TYPES.get(str(payload.get("BCObjectType")))
     if cls is None:
         return UnknownRecord.from_payload(payload)
-    return cls.from_payload(payload)
+    try:
+        return cls.from_payload(payload)
+    except TransactionDecodeError as err:
+        if not isinstance(payload.get("objectID"), str):
+            raise
+        _LOGGER.warning(
+            "Keeping %s record %s raw because it didn't decode: %s",
+            cls.__name__,
+            payload["objectID"],
+            err,
+        )
+        return UnknownRecord.from_payload(payload)
 
 
 def decode_transaction(transaction: str) -> Record:

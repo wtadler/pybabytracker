@@ -2,18 +2,24 @@
 
 Rules:
 
-- Records are keyed by ``objectID``. An add or update (opcodes 0 and 1) replaces the stored
-  record. A delete (opcode 2) removes it, and removing a record never seen is a no-op.
-- A device's transactions apply in ``SyncID`` order. The record's own ``timestamp`` is not
-  consulted, so an update with an older timestamp than the stored record still applies: the
-  log order is the truth.
-- When several devices have new transactions in one sync, devices apply in ``DeviceUUID``
-  order, so two devices editing one record always resolve the same way (the last applied
-  wins).
-- The engine tracks the highest ``SyncID`` seen per device, counting transactions it had to
-  skip, and only fetches devices whose ``LastSyncID`` is ahead of that.
+- Records are keyed by ``objectID``. An add or update (opcodes 0 and 1) stores the record. A
+  delete (opcode 2) removes it and leaves a tombstone, so a delete that arrives before the add
+  it targets still wins.
+- Each stored record and tombstone carries a version: the record's ``timestamp``, the device,
+  and the sync number. Within one device's log, later numbers always win (log order). Across
+  devices the result doesn't depend on which device the engine fetched first:
+
+  - An add or update replaces a stored record if its ``(timestamp, device, number)`` is newer.
+  - A delete removes a stored record unless the record's timestamp is newer than the delete's.
+  - An add or update from another device brings a deleted record back only with a strictly
+    newer timestamp than the tombstone.
+
 - A transaction that can't be decoded, has an unknown opcode, or has no ``objectID`` is
-  skipped with a warning and never stops the sync. A record of an unknown type is kept raw.
+  skipped with a warning and never stops the sync. A record of an unknown type, or of a known
+  type with values the models don't understand, is kept raw.
+- The engine tracks the highest number seen per device, counting skipped transactions, and
+  only fetches devices whose ``LastSyncID`` is ahead of that. A fresh ``SyncEngine`` replays
+  every log, so it recovers skipped payloads once a library fix ships.
 """
 
 from __future__ import annotations
@@ -29,6 +35,7 @@ from .models import (
     OP_ADD,
     OP_DELETE,
     OP_UPDATE,
+    RECORD_TYPES,
     Baby,
     Record,
     UnknownRecord,
@@ -38,7 +45,7 @@ from .models import (
 
 _LOGGER = logging.getLogger(__name__)
 
-STATE_VERSION = 1
+STATE_VERSION = 2
 
 
 class SyncSource(Protocol):
@@ -49,6 +56,23 @@ class SyncSource(Protocol):
     async def get_transactions(
         self, device_uuid: str, since_sync_id: int
     ) -> list[RawTransaction]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _Version:
+    timestamp: float
+    device_uuid: str
+    sync_id: int
+
+    def key(self) -> tuple[float, str, int]:
+        return (self.timestamp, self.device_uuid, self.sync_id)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"timestamp": self.timestamp, "device": self.device_uuid, "sync_id": self.sync_id}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> _Version:
+        return cls(float(data["timestamp"]), str(data["device"]), int(data["sync_id"]))
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +91,8 @@ class SyncResult:
 class SyncEngine:
     def __init__(self) -> None:
         self._records: dict[str, Record] = {}
+        self._versions: dict[str, _Version] = {}
+        self._tombstones: dict[str, _Version] = {}
         self._last_seen: dict[str, int] = {}
 
     @property
@@ -123,15 +149,43 @@ class SyncEngine:
         except TransactionDecodeError as err:
             _LOGGER.warning("Skipping undecodable transaction (%s): %s", where, err)
             return False
-        if isinstance(record, UnknownRecord):
+        if isinstance(record, UnknownRecord) and record.record_type not in RECORD_TYPES:
             _LOGGER.warning(
                 "Unknown record type %r (%s); keeping the raw payload", record.record_type, where
             )
+        stamp = record.timestamp.timestamp() if record.timestamp is not None else 0.0
+        version = _Version(stamp, device_uuid, transaction.sync_id)
         if transaction.op_code == OP_DELETE:
-            self._records.pop(record.object_id, None)
+            self._delete(record.object_id, version)
         else:
-            self._records[record.object_id] = record
+            self._store(record, version)
         return True
+
+    def _store(self, record: Record, version: _Version) -> None:
+        object_id = record.object_id
+        tombstone = self._tombstones.get(object_id)
+        if tombstone is not None:
+            same_device = tombstone.device_uuid == version.device_uuid
+            if not same_device and version.timestamp <= tombstone.timestamp:
+                return
+            del self._tombstones[object_id]
+        current = self._versions.get(object_id)
+        if current is not None and not _newer(version, current):
+            return
+        self._records[object_id] = record
+        self._versions[object_id] = version
+
+    def _delete(self, object_id: str, version: _Version) -> None:
+        current = self._versions.get(object_id)
+        if current is not None:
+            same_device = current.device_uuid == version.device_uuid
+            if not same_device and version.timestamp < current.timestamp:
+                return  # the record was edited after this delete
+            del self._records[object_id]
+            del self._versions[object_id]
+        tombstone = self._tombstones.get(object_id)
+        if tombstone is None or _newer(version, tombstone):
+            self._tombstones[object_id] = version
 
     def babies(self) -> dict[str, Baby]:
         """Every baby seen, by ID. A ``Baby`` record in the log wins over an embedded copy."""
@@ -160,20 +214,44 @@ class SyncEngine:
         return {
             "version": STATE_VERSION,
             "last_seen": dict(sorted(self._last_seen.items())),
-            "records": [r.to_payload() for _, r in sorted(self._records.items())],
+            "records": [
+                {"version": self._versions[i].to_dict(), "payload": r.to_payload()}
+                for i, r in sorted(self._records.items())
+            ],
+            "tombstones": [
+                {"object_id": i, "version": v.to_dict()}
+                for i, v in sorted(self._tombstones.items())
+            ],
         }
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> SyncEngine:
-        """Rebuild an engine from ``to_dict`` output."""
-        if data.get("version") != STATE_VERSION:
-            raise ValueError(f"unsupported engine state version: {data.get('version')!r}")
+        """Rebuild an engine from ``to_dict`` output. Version 1 state loads with no tombstones."""
+        version = data.get("version")
+        if version not in (1, STATE_VERSION):
+            raise ValueError(f"unsupported engine state version: {version!r}")
         engine = cls()
         engine._last_seen = {str(k): int(v) for k, v in data["last_seen"].items()}
-        for payload in data["records"]:
-            record = decode_payload(payload)
+        for entry in data["records"]:
+            if version == 1:
+                record = decode_payload(entry)
+                stamp = record.timestamp.timestamp() if record.timestamp is not None else 0.0
+                stored = _Version(stamp, "", 0)
+            else:
+                record = decode_payload(entry["payload"])
+                stored = _Version.from_dict(entry["version"])
             engine._records[record.object_id] = record
+            engine._versions[record.object_id] = stored
+        for entry in data.get("tombstones", []):
+            engine._tombstones[str(entry["object_id"])] = _Version.from_dict(entry["version"])
         return engine
+
+
+def _newer(new: _Version, old: _Version) -> bool:
+    """Whether ``new`` replaces ``old``: log order within a device, version key across devices."""
+    if new.device_uuid == old.device_uuid:
+        return new.sync_id > old.sync_id
+    return new.key() > old.key()
 
 
 def _sort_key(record: Record) -> tuple[float, float]:

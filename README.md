@@ -18,8 +18,10 @@ async with aiohttp.ClientSession() as session:
     saved_state = engine.to_dict()  # JSON-safe, for the caller to persist
 ```
 
-- Pass your own `aiohttp.ClientSession` (the client never closes it). Without one, the client
-  makes its own and closes it in `close()`.
+- Pass your own `aiohttp.ClientSession` (the client never closes it), and make it dedicated to
+  this client: the service authenticates by cookie, so two accounts must not share a session (in
+  Home Assistant, use `async_create_clientsession`). Without one, the client makes its own and
+  closes it in `close()`.
 - `AuthenticationError` means the credentials were rejected. `BabyTrackerConnectionError` means
   the service was unreachable or answered with a server error. A 401 mid-session triggers one
   sign-in and a retry before it becomes an `AuthenticationError`.
@@ -29,10 +31,19 @@ async with aiohttp.ClientSession() as session:
 
 ## Merge rules
 
-Records are keyed by `objectID`. Adds and updates replace, deletes remove (a delete for an
-unseen record is a no-op). Each device's log applies in number order, and the record's own
-`timestamp` is ignored, so an older-stamped update still applies. Devices apply in device-ID
-order within one sync, so two devices editing one record always resolve the same way.
+Records are keyed by `objectID`. Each stored record carries a version made of the record's
+`timestamp`, the device, and the sync number. Within one device's log, later numbers always win.
+Across devices the result doesn't depend on which device is fetched first:
+
+- An add or update replaces a stored record if its (timestamp, device, number) is newer.
+- A delete removes the record unless the record's timestamp is newer than the delete's, and it
+  leaves a tombstone, so a delete that arrives before the add it targets still wins.
+- An add or update from another device brings a deleted record back only with a strictly newer
+  timestamp than the tombstone. Within one device, a later add always wins.
+
+Tombstones are saved by `to_dict()`. State saved by an older version (1) loads with none.
+A payload that can't be decoded at all is skipped with a warning, and the sync moves past it. A
+fresh `SyncEngine` replays every log, so it recovers skipped payloads once a fix ships.
 
 ## Command line
 
@@ -44,8 +55,9 @@ python -m pybabytracker --probe-history
 
 The tool signs in as a separate device named "Home Assistant (dev)". Its ID is made once and
 kept in `.pybabytracker-device.json` (gitignored). `--probe-history` reads every device's log
-from 0 and reports how many transactions come back versus its `LastSyncID`, and whether the
-probe device now appears in the device list. It only reads.
+from 0 and reports how many transactions come back versus its `LastSyncID`, the lowest and
+highest numbers returned, and a verdict (full, paged, starts at K with older numbers trimmed, or
+gaps), then whether the probe device now appears in the device list. It only reads.
 
 ## Develop
 
