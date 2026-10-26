@@ -25,6 +25,7 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from .models import (
     DIAPER_DIRTY,
@@ -45,6 +46,9 @@ from .models import (
     Volume,
     VolumeMeasure,
 )
+
+MAX_MINUTES_PER_SIDE = 240
+MAX_SLEEP = timedelta(hours=24)
 
 # What the app filled in on the captured nursing add: a finished, detailed session.
 _NURSING_FINISHED_STATE = 5
@@ -82,21 +86,26 @@ def _offset(moment: datetime, name: str) -> int:
 
 
 def _number(value: float) -> int | float:
-    """A volume as the app writes it: an integer when whole."""
-    return int(value) if float(value).is_integer() else float(value)
+    """A volume as the app writes it: rounded to 2 decimals, an integer when whole."""
+    rounded = round(float(value), 2)
+    return int(rounded) if rounded.is_integer() else rounded
 
 
 def _checked(volume: object, name: str = "volume") -> Volume:
     if not isinstance(volume, Volume):
         raise ValueError(f"{name} must be a Volume(value, unit)")
-    if volume.unit not in (UNIT_OUNCES, UNIT_MILLILITERS):
-        raise ValueError(f"unknown {name} unit {volume.unit!r}: use 'oz' or 'ml'")
+    if volume.unit == UNIT_MILLILITERS:
+        raise ValueError(
+            "metric volumes aren't supported until the app's metric format is confirmed: use ounces"
+        )
+    if volume.unit != UNIT_OUNCES:
+        raise ValueError(f"unknown {name} unit {volume.unit!r}: use 'oz'")
     value = volume.value
     if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
         raise ValueError(f"{name} must be a finite number")
     if value < 0:
         raise ValueError(f"{name} can't be negative")
-    return Volume(value, volume.unit)
+    return Volume(_number(value), volume.unit)
 
 
 def _measure(volume: Volume) -> VolumeMeasure:
@@ -108,6 +117,8 @@ def _minutes(value: object, name: str) -> int:
         raise ValueError(f"{name} must be a whole number of minutes")
     if value < 0:
         raise ValueError(f"{name} can't be negative")
+    if value > MAX_MINUTES_PER_SIDE:
+        raise ValueError(f"{name} can't be more than {MAX_MINUTES_PER_SIDE}")
     return value
 
 
@@ -120,6 +131,23 @@ def _side(finish_side: int | None, left_used: bool, right_used: bool) -> int:
     return SIDE_LEFT if left_used and not right_used else SIDE_RIGHT
 
 
+def _base(
+    object_id: str, baby: Baby, timestamp: datetime, event: datetime, tz: int, text: str
+) -> dict[str, Any]:
+    """The fields every new record carries."""
+    return {
+        "object_id": object_id,
+        "time": event,
+        "timestamp": timestamp,
+        "timezone": tz,
+        "note": text,
+        "picture_note": [],
+        "new_flag": "true",
+        "picture_loaded": "true",
+        "baby": baby,
+    }
+
+
 def draft_diaper(
     status: int, *, time: datetime | None, timezone_offset: int | None, note: str
 ) -> Draft[Diaper]:
@@ -129,16 +157,8 @@ def draft_diaper(
 
     def build(object_id: str, baby: Baby, timestamp: datetime) -> Diaper:
         return Diaper(
-            object_id=object_id,
-            time=event,
-            timestamp=timestamp,
-            timezone=tz,
+            **_base(object_id, baby, timestamp, event, tz, text),
             status=status,
-            note=text,
-            picture_note=[],
-            new_flag="true",
-            picture_loaded="true",
-            baby=baby,
             # What the app filled in on the captured add (PROTOCOL.md) with only a type set.
             amount=2,
             pee_color=5,
@@ -161,20 +181,12 @@ def draft_bottle[R: (Formula, Pumped)](
     """A formula or pumped-milk bottle."""
     checked = _checked(volume)
     if checked.value <= 0:
-        raise ValueError("a bottle's volume must be more than zero")
+        raise ValueError("a bottle's volume must be more than zero")  # also after rounding
     event, tz, text = _common(time, timezone_offset, note)
 
     def build(object_id: str, baby: Baby, timestamp: datetime) -> R:
         return record_type(
-            object_id=object_id,
-            time=event,
-            timestamp=timestamp,
-            timezone=tz,
-            note=text,
-            picture_note=[],
-            new_flag="true",
-            picture_loaded="true",
-            baby=baby,
+            **_base(object_id, baby, timestamp, event, tz, text),
             amount=_measure(checked),
         )
 
@@ -212,15 +224,7 @@ def draft_nursing(
 
     def build(object_id: str, baby: Baby, timestamp: datetime) -> Nursing:
         return Nursing(
-            object_id=object_id,
-            time=event,
-            timestamp=timestamp,
-            timezone=tz,
-            note=text,
-            picture_note=[],
-            new_flag="true",
-            picture_loaded="true",
-            baby=baby,
+            **_base(object_id, baby, timestamp, event, tz, text),
             left_duration=left,
             right_duration=right,
             both_duration=0,
@@ -241,21 +245,15 @@ def draft_sleep(
     _offset(end, "end")
     if end <= start:
         raise ValueError("end must be after start")
+    if end - start > MAX_SLEEP:
+        raise ValueError("a sleep can't be longer than 24 hours")
     seconds = (end - start).total_seconds()
     minutes = max(1, math.floor(seconds / 60 + 0.5))
     event, tz, text = _common(start, timezone_offset, note)
 
     def build(object_id: str, baby: Baby, timestamp: datetime) -> Sleep:
         return Sleep(
-            object_id=object_id,
-            time=event,
-            timestamp=timestamp,
-            timezone=tz,
-            note=text,
-            picture_note=[],
-            new_flag="true",
-            picture_loaded="true",
-            baby=baby,
+            **_base(object_id, baby, timestamp, event, tz, text),
             duration=minutes,
         )
 
@@ -295,15 +293,7 @@ def draft_pump(
 
     def build(object_id: str, baby: Baby, timestamp: datetime) -> Pump:
         return Pump(
-            object_id=object_id,
-            time=event,
-            timestamp=timestamp,
-            timezone=tz,
-            note=text,
-            picture_note=[],
-            new_flag="true",
-            picture_loaded="true",
-            baby=baby,
+            **_base(object_id, baby, timestamp, event, tz, text),
             amount=_measure(Volume(total, unit)),
             left_amount=_measure(Volume(left_amount, unit)),
             right_amount=_measure(Volume(right_amount, unit)),

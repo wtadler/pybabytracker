@@ -235,19 +235,86 @@ async def test_an_ounce_volume_is_a_volume_measure_with_english_measure_true(
     }
 
 
-async def test_a_milliliter_volume_is_a_volume_measure_with_english_measure_false(
+@pytest.mark.parametrize(
+    "call",
+    [
+        ("add_formula", {"volume": Volume(120, "ml")}),
+        ("add_pumped", {"volume": Volume(90, "ml")}),
+        ("add_pump", {"left_volume": Volume(60, "ml"), "left_minutes": 15}),
+        ("add_pump", {"left_volume": Volume(2, "oz"), "right_volume": Volume(60, "ml")}),
+    ],
+    ids=["formula", "pumped", "pump", "pump-mixed"],
+)
+async def test_a_milliliter_write_is_refused_with_no_request(
+    call: tuple[str, dict[str, Any]], client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    engine = await ready(client, fake_server)
+    fake_server.requests.clear()
+    method, kwargs = call
+
+    with pytest.raises(ValueError, match="metric volumes aren't supported"):
+        await getattr(engine, method)(client, BABY_ID, **kwargs)
+
+    assert fake_server.requests == []
+
+
+async def test_a_milliliter_record_from_another_device_still_reads_as_milliliters(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    from conftest import PROBE_UUID  # noqa: F401
+    from factories import payload_for
+    from test_writes import PHONE, rid
+
+    from pybabytracker import OP_ADD
+
+    seed(fake_server)
+    fake_server.add_transaction(
+        PHONE,
+        OP_ADD,
+        payload_for(
+            "Formula",
+            rid(2),
+            amount={"BCObjectType": "VolumeMeasure", "englishMeasure": "false", "value": 120},
+        ),
+    )
+    engine = await synced_engine(client)
+
+    record = engine.records[rid(2)]
+    assert isinstance(record, Formula)
+    assert record.volume == Volume(120, "ml")
+
+
+async def test_every_written_volume_is_rounded_to_two_decimals(
     client: BabyTrackerClient, fake_server: FakeSyncServer
 ) -> None:
     engine = await ready(client, fake_server)
 
-    record = await engine.add_formula(client, BABY_ID, volume=Volume(120, "ml"))
+    await engine.add_formula(client, BABY_ID, volume=Volume(0.1 + 0.2, "oz"))
+    await engine.add_pump(
+        client,
+        BABY_ID,
+        left_volume=Volume(1.005, "oz"),
+        right_volume=Volume(2.3333333, "oz"),
+        left_minutes=5,
+    )
 
-    assert posted(fake_server)["amount"] == {
-        "BCObjectType": "VolumeMeasure",
-        "englishMeasure": "false",
-        "value": 120,
-    }
-    assert record.volume == Volume(120, "ml")
+    assert posted(fake_server, 0)["amount"]["value"] == 0.3
+    pump = posted(fake_server, 1)
+    assert pump["leftAmount"]["value"] == 1.0
+    assert pump["rightAmount"]["value"] == 2.33
+    assert pump["amount"]["value"] == 3.33
+
+
+async def test_a_volume_that_rounds_to_zero_is_refused(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    engine = await ready(client, fake_server)
+    fake_server.requests.clear()
+
+    with pytest.raises(ValueError):
+        await engine.add_formula(client, BABY_ID, volume=Volume(0.004, "oz"))
+
+    assert fake_server.requests == []
 
 
 async def test_a_fractional_volume_keeps_its_fraction_and_a_whole_one_is_an_integer(
@@ -270,10 +337,10 @@ async def test_a_pumped_bottle_takes_the_same_volume_encoding(
 ) -> None:
     engine = await ready(client, fake_server)
 
-    record = await engine.add_pumped(client, BABY_ID, volume=Volume(90, "ml"))
+    record = await engine.add_pumped(client, BABY_ID, volume=Volume(3, "oz"))
 
     assert posted(fake_server)["BCObjectType"] == "Pumped"
-    assert posted(fake_server)["amount"]["englishMeasure"] == "false"
+    assert posted(fake_server)["amount"]["englishMeasure"] == "true"
     assert isinstance(record.amount, VolumeMeasure)
 
 
@@ -444,20 +511,13 @@ async def test_a_one_sided_pump_writes_zero_for_the_other_side_in_the_same_unit(
     engine = await ready(client, fake_server)
 
     await engine.add_pump(
-        client, BABY_ID, left_volume=Volume(60, "ml"), left_minutes=15, finish_side=SIDE_LEFT
+        client, BABY_ID, left_volume=Volume(6, "oz"), left_minutes=15, finish_side=SIDE_LEFT
     )
 
     payload = posted(fake_server)
-    assert payload["amount"] == {
-        "BCObjectType": "VolumeMeasure",
-        "englishMeasure": "false",
-        "value": 60,
-    }
-    assert payload["rightAmount"] == {
-        "BCObjectType": "VolumeMeasure",
-        "englishMeasure": "false",
-        "value": 0,
-    }
+    measure = {"BCObjectType": "VolumeMeasure", "englishMeasure": "true"}
+    assert payload["amount"] == {**measure, "value": 6}
+    assert payload["rightAmount"] == {**measure, "value": 0}
     assert payload["rightDuration"] == 0
     assert payload["finishSide"] == SIDE_LEFT
     assert payload["sides"] == 0
@@ -469,13 +529,13 @@ async def test_a_pump_decodes_back_to_the_volumes_written(
     engine = await ready(client, fake_server)
 
     record = await engine.add_pump(
-        client, BABY_ID, left_volume=Volume(90, "ml"), right_volume=Volume(110, "ml")
+        client, BABY_ID, left_volume=Volume(3, "oz"), right_volume=Volume(4, "oz")
     )
 
     assert isinstance(record, Pump)
-    assert record.volume == Volume(200, "ml")
-    assert record.left_volume == Volume(90, "ml")
-    assert record.right_volume == Volume(110, "ml")
+    assert record.volume == Volume(7, "oz")
+    assert record.left_volume == Volume(3, "oz")
+    assert record.right_volume == Volume(4, "oz")
 
 
 # --- AC: every new type is at-most-once ---------------------------------------------------------
@@ -601,7 +661,7 @@ BAD_CALLS: dict[str, tuple[str, dict[str, Any]]] = {
     "negative bottle": ("add_formula", {"volume": Volume(-1, "oz")}),
     "zero bottle": ("add_formula", {"volume": Volume(0, "oz")}),
     "nan bottle": ("add_formula", {"volume": Volume(math.nan, "oz")}),
-    "infinite bottle": ("add_pumped", {"volume": Volume(math.inf, "ml")}),
+    "infinite bottle": ("add_pumped", {"volume": Volume(math.inf, "oz")}),
     "unknown unit": ("add_formula", {"volume": Volume(4, "cups")}),
     "unit in the wrong case": ("add_formula", {"volume": Volume(4, "OZ")}),
     "plain number for a volume": ("add_pumped", {"volume": 4}),
@@ -639,6 +699,16 @@ BAD_CALLS: dict[str, tuple[str, dict[str, Any]]] = {
     "pump unknown unit": ("add_pump", {"left_volume": Volume(2, "pt")}),
     "negative pump minutes": ("add_pump", {"left_volume": Volume(2, "oz"), "right_minutes": -3}),
     "naive pump time": ("add_pump", {"left_volume": Volume(2, "oz"), "time": NAIVE}),
+    "nursing over 240 minutes a side": ("add_nursing", {"left_minutes": 241}),
+    "nursing right over 240": ("add_nursing", {"left_minutes": 5, "right_minutes": 241}),
+    "pump over 240 minutes a side": (
+        "add_pump",
+        {"left_volume": Volume(2, "oz"), "left_minutes": 241},
+    ),
+    "sleep over 24 hours": (
+        "add_sleep",
+        {"start": NOW, "end": NOW + timedelta(hours=24, seconds=1)},
+    ),
     "pump finish side 3": ("add_pump", {"left_volume": Volume(2, "oz"), "finish_side": 3}),
 }
 
@@ -669,6 +739,25 @@ async def test_a_refused_write_does_not_use_up_a_number(
     await write_formula(engine, client, {})
 
     assert [e["SyncID"] for e in own_posts(fake_server)] == [1]
+
+
+@pytest.mark.parametrize(
+    ("method", "kwargs"),
+    [
+        ("add_nursing", {"left_minutes": 240, "right_minutes": 240}),
+        ("add_pump", {"left_volume": Volume(2, "oz"), "left_minutes": 240}),
+        ("add_sleep", {"start": NOW, "end": NOW + timedelta(hours=24)}),
+    ],
+    ids=["nursing", "pump", "sleep"],
+)
+async def test_the_largest_allowed_duration_is_accepted(
+    method: str, kwargs: dict[str, Any], client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    engine = await ready(client, fake_server)
+
+    await getattr(engine, method)(client, BABY_ID, **kwargs)
+
+    assert len(own_posts(fake_server)) == 1
 
 
 # --- own_writes and undo -----------------------------------------------------------------------
