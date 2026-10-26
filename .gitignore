@@ -6,3 +6,5 @@ __pycache__/
 dist/
 *.egg-info/
 .pybabytracker-device.json
+.pybabytracker-test-device.json
+.pybabytracker-test-state.json

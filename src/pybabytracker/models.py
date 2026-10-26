@@ -24,6 +24,10 @@ OP_ADD = 0
 OP_UPDATE = 1
 OP_DELETE = 2
 
+DIAPER_WET = 0
+DIAPER_DIRTY = 1
+DIAPER_MIXED = 2
+
 _LOGGER = logging.getLogger(__name__)
 
 _TIME = "time"

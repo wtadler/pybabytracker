@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import io
 import json
 from pathlib import Path
@@ -426,3 +427,110 @@ async def test_the_fake_returns_oldest_first_pages_unless_newest_first_is_set(
     _device_with(fake_server, 10)
     fake_server.page_size = 3
     assert [t.sync_id for t in await client.get_transactions(TABLET, 0)] == [1, 2, 3]
+
+
+# --- writing a test diaper ----------------------------------------------------------------
+
+
+def _write_args(fake: FakeSyncServer, tmp_path: Path, *extra: str) -> list[str]:
+    return [
+        "--base-url",
+        fake.base_url,
+        "--env-file",
+        str(tmp_path / ".env"),
+        "--test-device-file",
+        str(tmp_path / "test-device.json"),
+        "--state-file",
+        str(tmp_path / "state.json"),
+        *extra,
+    ]
+
+
+def _test_env(fake: FakeSyncServer) -> dict[str, str]:
+    return {"BT_TEST_EMAIL": fake.email, "BT_TEST_PASSWORD": fake.password}
+
+
+async def _write(fake: FakeSyncServer, tmp_path: Path, *extra: str) -> str:
+    out, err = io.StringIO(), io.StringIO()
+    code = await run_cli(_write_args(fake, tmp_path, *extra), _test_env(fake), out, err)
+    assert code == 0, err.getvalue()
+    return out.getvalue()
+
+
+def _test_device_id(tmp_path: Path) -> str:
+    device_id: str = json.loads((tmp_path / "test-device.json").read_text())["device_uuid"]
+    return device_id
+
+
+async def test_write_test_diaper_needs_the_test_account_credentials_not_the_main_ones(
+    fake_server: FakeSyncServer, tmp_path: Path
+) -> None:
+    out, err = io.StringIO(), io.StringIO()
+    code = await run_cli(
+        _write_args(fake_server, tmp_path, "--write-test-diaper"), _env(fake_server), out, err
+    )
+    assert code == 2
+    assert "BT_TEST_EMAIL" in err.getvalue()
+    assert fake_server.requests == []
+
+
+async def test_write_test_diaper_adds_one_diaper_as_the_dev_device_and_reports_the_device_list(
+    fake_server: FakeSyncServer, tmp_path: Path
+) -> None:
+    fake_server.register_devices = False
+    _seed(fake_server)
+
+    text = await _write(fake_server, tmp_path, "--write-test-diaper")
+
+    device_id = _test_device_id(tmp_path)
+    assert device_id != PROBE_UUID
+    [session] = {r.body["Device"]["DeviceName"] for r in fake_server.calls("POST", "/session")}
+    assert session == "Home Assistant (dev)"
+    [entry] = fake_server.posted(device_id)
+    assert entry["SyncID"] == 1
+    assert "before the write: Home Assistant (dev) is not in the device list" in text
+    assert "after the write: Home Assistant (dev) is in the device list, LastSyncID 1" in text
+    assert "own log fetched: no" in text
+    assert "applied: 0" in text
+    assert "wet diaper" in text
+    assert (tmp_path / "state.json").exists()
+
+
+async def test_delete_test_diaper_deletes_the_diaper_the_dev_device_wrote(
+    fake_server: FakeSyncServer, tmp_path: Path
+) -> None:
+    fake_server.register_devices = False
+    _seed(fake_server)
+    await _write(fake_server, tmp_path, "--write-test-diaper", "--status", "dirty")
+    device_id = _test_device_id(tmp_path)
+    object_id = json.loads(base64.b64decode(fake_server.posted(device_id)[0]["Transaction"]))[
+        "objectID"
+    ]
+
+    text = await _write(fake_server, tmp_path, "--delete-test-diaper", object_id)
+
+    assert [e["OPCode"] for e in fake_server.posted(device_id)] == [0, 2]
+    assert "after the write: Home Assistant (dev) is in the device list, LastSyncID 2" in text
+    assert "own log fetched: no" in text
+
+
+async def test_delete_test_diaper_refuses_another_devices_record(
+    fake_server: FakeSyncServer, tmp_path: Path
+) -> None:
+    _seed(fake_server)
+    out, err = io.StringIO(), io.StringIO()
+    code = await run_cli(
+        _write_args(fake_server, tmp_path, "--delete-test-diaper", rid(1)),
+        _test_env(fake_server),
+        out,
+        err,
+    )
+    assert code == 1
+    assert "wasn't created by this device" in err.getvalue()
+    assert not fake_server.calls("POST", "/account/transaction")
+
+
+def test_the_test_device_and_state_files_are_gitignored() -> None:
+    ignored = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert ".pybabytracker-test-device.json" in ignored
+    assert ".pybabytracker-test-state.json" in ignored

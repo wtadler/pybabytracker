@@ -449,6 +449,26 @@ async def test_a_delete_from_another_device_wins_whatever_the_device_ids_sort_li
         assert rid(1) not in engine.records
 
 
+@pytest.mark.parametrize(("creator", "other"), [(HIGH, LOW), (LOW, HIGH)])
+async def test_a_delete_carrying_the_records_own_timestamp_removes_it(
+    creator: str, other: str
+) -> None:
+    # The app's delete sends the record as last saved, without bumping its timestamp.
+    record = payload_for("Diaper", rid(1), timestamp=ts(1))
+    deleted = {**record, "newFlage": "false"}
+    cases = {
+        "same device": {creator: [tx(1, OP_ADD, record), tx(2, OP_DELETE, deleted)]},
+        "other device": {creator: [tx(1, OP_ADD, record)], other: [tx(1, OP_DELETE, deleted)]},
+    }
+    for logs in cases.values():
+        for reverse in (False, True):
+            source = MemorySource(logs)
+            source.reverse_listing = reverse
+            engine = SyncEngine()
+            await engine.sync(source)
+            assert rid(1) not in engine.records
+
+
 @pytest.mark.parametrize(("creator", "editor"), [(HIGH, LOW), (LOW, HIGH)])
 async def test_a_later_edit_from_another_device_wins_whatever_the_device_ids_sort_like(
     creator: str, editor: str
@@ -537,7 +557,7 @@ def test_a_version_1_state_loads_with_no_tombstones() -> None:
     }
     engine = SyncEngine.from_dict(old)
     assert engine.records[rid(1)].note == "kept"
-    assert engine.to_dict()["version"] == 3
+    assert engine.to_dict()["version"] == 4
     assert engine.to_dict()["tombstones"] == []
     engine.apply(
         HIGH,
