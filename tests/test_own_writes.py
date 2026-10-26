@@ -226,8 +226,8 @@ async def test_local_apply_matches_a_replay_of_the_log(
 
 
 async def test_a_post_that_lands_late_keeps_its_own_number_and_place(
-    quick_client: BabyTrackerClient,
-    fake_server: FakeSyncServer,  # noqa: F811
+    quick_client: BabyTrackerClient,  # noqa: F811
+    fake_server: FakeSyncServer,
 ) -> None:
     seed(fake_server)
     engine = await synced_engine(quick_client)
@@ -244,8 +244,8 @@ async def test_a_post_that_lands_late_keeps_its_own_number_and_place(
 
 
 async def test_a_failed_post_that_never_landed_is_not_listed_and_its_number_is_reused(
-    quick_client: BabyTrackerClient,
-    fake_server: FakeSyncServer,  # noqa: F811
+    quick_client: BabyTrackerClient,  # noqa: F811
+    fake_server: FakeSyncServer,
 ) -> None:
     seed(fake_server)
     engine = await synced_engine(quick_client)
@@ -340,3 +340,20 @@ async def test_the_accessor_does_not_re_encode_the_state(
     monkeypatch.setattr(Diaper, "to_payload", boom)
 
     assert [i for i, _ in engine.own_writes()] == ids
+
+
+async def test_an_own_add_rejected_by_a_newer_tombstone_leaves_no_number() -> None:
+    engine = SyncEngine(device_uuid=PROBE_UUID)
+    tombstone = payload_for("Diaper", rid(70), timestamp=LATER)
+    engine.apply(
+        PHONE, [RawTransaction(1, OP_DELETE, encode_transaction(decode_payload(tombstone)))]
+    )
+    old_add = payload_for("Diaper", rid(70))  # older than the delete, so the delete wins
+    engine.apply(
+        PROBE_UUID, [RawTransaction(1, OP_ADD, encode_transaction(decode_payload(old_add)))]
+    )
+
+    assert rid(70) not in engine.records
+    assert engine.own_writes() == []
+    assert engine.to_dict()["created_numbers"] == {}
+    assert rid(70) in engine.created_ids

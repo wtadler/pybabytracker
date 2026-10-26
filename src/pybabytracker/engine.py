@@ -528,6 +528,8 @@ class SyncEngine:
             self._delete(record.object_id, version)
         else:
             self._store(record, version)
+            if record.object_id not in self._records:
+                self._add_numbers.pop(record.object_id, None)  # a newer delete rejected the add
         return True
 
     def _store(self, record: Record, version: _Version) -> None:
