@@ -248,6 +248,9 @@ class SyncEngine:
         """IDs of every record this device added. Only these can be deleted."""
         return frozenset(self._created)
 
+    def own_writes(self) -> list[tuple[str, int]]:
+        return []
+
     async def add_diaper(
         self,
         target: WriteTarget,
