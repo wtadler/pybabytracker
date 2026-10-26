@@ -110,10 +110,18 @@ nursing session is written once, finished, with `add_nursing`.
   stored one when that's ahead of this clock, so the end wins the merge). Key order and unknown
   keys are kept.
 - A sleep longer than 24 hours at the stop is **clamped to 1,440 minutes** with a warning, not
-  refused, so a forgotten timer can always be stopped.
+  refused, so a forgotten timer can always be stopped. An `end` more than a minute in the future
+  is clamped to now, and an end at or up to a minute before the start (a clock running a little
+  fast) is written as 1 minute.
 - Refused before any request: a record never seen or deleted (`RecordNotFoundError`), one that
-  isn't a sleep (`WrongRecordTypeError`), or a finished sleep (`TimerNotRunningError`). A sleep
-  this device already ended is returned as is, with nothing posted, so retries are safe.
+  isn't a sleep (`WrongRecordTypeError`), or a sleep another device finished
+  (`TimerNotRunningError`). A sleep this device already ended (its end is in this device's log,
+  even if a phone edited it since) is returned as is, with nothing posted, so retries are safe.
+- The end carries the whole record as this device last saw it, so a phone edit that hasn't synced
+  yet (a note, say) is overwritten by it, as the app's own edits overwrite each other.
+- A phone delete racing an end: the app's delete keeps the record's old timestamp, so an end
+  posted after it (with a newer timestamp) outlives it, and the sleep stays here as ended. How the
+  app shows that case is still to be checked on a test device.
 - An end is an update, not an add: it doesn't make another device's sleep this device's own, so
   `delete_record` still refuses it. Undo of a sleep this device started works running or ended.
 

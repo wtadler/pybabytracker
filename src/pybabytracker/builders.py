@@ -21,7 +21,6 @@ Conventions:
 
 from __future__ import annotations
 
-import logging
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -55,7 +54,6 @@ MAX_SLEEP_MINUTES = 24 * 60
 # How far ahead of this clock a timer's start may be: phones and Home Assistant disagree a little.
 START_SKEW = timedelta(minutes=1)
 
-_LOGGER = logging.getLogger(__name__)
 
 # What the app filled in on the captured nursing add: a finished, detailed session.
 _NURSING_FINISHED_STATE = 5
@@ -297,36 +295,47 @@ def draft_sleep_start(
     return Draft(Sleep, build)
 
 
-def check_sleep_end(sleep: Sleep, end: datetime) -> int:
-    """Check that ``end`` can end ``sleep``, and return the duration to write.
+@dataclass(frozen=True, slots=True)
+class SleepEnd:
+    """How a running sleep ends: the minutes to write, and what was adjusted to get them."""
 
-    ``end`` must be aware and after the sleep's start. The duration follows ``sleep_minutes``. A
-    sleep longer than 24 hours is clamped to 1,440 minutes rather than refused, so a timer someone
-    forgot can always be stopped; the length can be fixed in the app afterward.
+    minutes: int
+    end: datetime
+    future_clamped: bool = False  # ``end`` was more than START_SKEW ahead, so now was used
+    long_clamped: bool = False  # longer than 24 hours, so 1,440 minutes are written
+
+
+def resolve_sleep_end(sleep: Sleep, end: datetime, now: datetime) -> SleepEnd:
+    """Check that ``end`` can end ``sleep`` at ``now``, and work out the duration to write.
+
+    - ``end`` must be aware. One more than ``START_SKEW`` ahead of ``now`` is clamped to ``now``.
+    - An end at or before the start, by up to ``START_SKEW``, is a 1-minute sleep: a start saved
+      by a clock running a little fast (a phone's, or this one's within ``start_sleep``'s skew)
+      can always be stopped. An end further before the start raises ``ValueError``.
+    - Otherwise ``sleep_minutes``. A sleep longer than 24 hours is clamped to 1,440 minutes
+      rather than refused, so a timer someone forgot can always be stopped; the length can be
+      fixed in the app afterward.
     """
     _offset(end, "end")
     start = sleep.time
     if start is None:
         raise ValueError(f"sleep {sleep.object_id} has no start time")
+    future = end - now > START_SKEW
+    if future:
+        end = now
     if end <= start:
-        raise ValueError("end must be after the sleep's start")
+        if start - end > START_SKEW:
+            raise ValueError("end must be after the sleep's start")
+        return SleepEnd(1, end, future_clamped=future)
     if end - start > MAX_SLEEP:
-        return MAX_SLEEP_MINUTES
-    return sleep_minutes(start, end)
+        return SleepEnd(MAX_SLEEP_MINUTES, end, future_clamped=future, long_clamped=True)
+    return SleepEnd(sleep_minutes(start, end), end, future_clamped=future)
 
 
-def ended_sleep_payload(sleep: Sleep, end: datetime, timestamp: datetime) -> dict[str, Any]:
+def ended_sleep_payload(sleep: Sleep, minutes: int, timestamp: datetime) -> dict[str, Any]:
     """The update that ends a running sleep, as the app posts it at a timer's stop: the record as
-    last saved (key order and unknown keys kept), with only ``duration`` (``check_sleep_end``),
-    ``newFlage`` "false", and ``timestamp`` changed. Logs a warning when the duration is clamped
-    to 24 hours."""
-    minutes = check_sleep_end(sleep, end)
-    if sleep.time is not None and end - sleep.time > MAX_SLEEP:
-        _LOGGER.warning(
-            "Sleep %s ran %s, longer than 24 hours; writing 24 hours",
-            sleep.object_id,
-            end - sleep.time,
-        )
+    last saved (key order and unknown keys kept), with only ``duration``, ``newFlage`` "false",
+    and ``timestamp`` changed."""
     payload = sleep.to_payload()
     payload["duration"] = minutes
     payload["newFlage"] = "false"

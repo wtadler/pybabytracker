@@ -316,7 +316,9 @@ async def test_end_sleep_beats_a_start_whose_timestamp_is_ahead_of_this_clock(
 async def test_end_sleep_rounds_to_whole_minutes_half_up_with_a_minimum_of_one(
     client: BabyTrackerClient, fake_server: FakeSyncServer, seconds: int, minutes: int
 ) -> None:
-    engine, begin = await engine_with_phone_sleep(client, fake_server)
+    engine, begin = await engine_with_phone_sleep(
+        client, fake_server, start=now() - timedelta(hours=2)
+    )
 
     ended = await engine.end_sleep(client, SLEEP_ID, end=begin + timedelta(seconds=seconds))
 
@@ -327,7 +329,9 @@ async def test_end_sleep_rounds_to_whole_minutes_half_up_with_a_minimum_of_one(
 async def test_end_sleep_measures_real_elapsed_time_across_zones(
     client: BabyTrackerClient, fake_server: FakeSyncServer
 ) -> None:
-    engine, begin = await engine_with_phone_sleep(client, fake_server)
+    engine, begin = await engine_with_phone_sleep(
+        client, fake_server, start=now() - timedelta(hours=2)
+    )
     later = (begin + timedelta(minutes=45)).astimezone(timezone(timedelta(hours=5, minutes=30)))
 
     ended = await engine.end_sleep(client, SLEEP_ID, end=later)
@@ -369,7 +373,7 @@ async def test_end_sleep_refuses_an_end_before_the_start_with_no_request(
     fake_server.requests.clear()
 
     with pytest.raises(ValueError):
-        await engine.end_sleep(client, SLEEP_ID, end=begin - timedelta(minutes=1))
+        await engine.end_sleep(client, SLEEP_ID, end=begin - timedelta(minutes=2))
     with pytest.raises(ValueError):
         await engine.end_sleep(client, SLEEP_ID, end=datetime(2026, 10, 26, 12, 0))
 
@@ -484,10 +488,10 @@ async def test_end_sleep_before_any_sync_is_refused_with_no_request(
     assert fake_server.requests == []
 
 
-async def test_a_sleep_this_device_ended_cannot_be_ended_again_by_a_phone_edit_race(
+async def test_ending_again_a_sleep_this_device_ended_returns_it_even_after_a_phone_edit(
     client: BabyTrackerClient, fake_server: FakeSyncServer
 ) -> None:
-    """Ending a sleep HA already ended returns it; once a phone edits it again, it's refused."""
+    """Ending a sleep HA already ended returns it, and still does once a phone edits it."""
     engine, _ = await engine_with_phone_sleep(client, fake_server)
     first = await engine.end_sleep(client, SLEEP_ID)
 
@@ -499,8 +503,8 @@ async def test_a_sleep_this_device_ended_cannot_be_ended_again_by_a_phone_edit_r
     edited["timestamp"] = stamp(now() + timedelta(minutes=1))
     fake_server.add_transaction(PHONE, OP_UPDATE, edited)
     await engine.sync(client)
-    with pytest.raises(TimerNotRunningError):
-        await engine.end_sleep(client, SLEEP_ID)
+    edited_back = await engine.end_sleep(client, SLEEP_ID)
+    assert edited_back.note == "edited"
     assert post_numbers(fake_server) == [1]
 
 
@@ -751,3 +755,113 @@ async def test_a_sleep_another_device_started_cannot_be_undone_even_after_ending
         await engine.delete_record(client, SLEEP_ID)
 
     assert post_numbers(fake_server) == [1]
+
+
+# --- round 1: clock skew, a retry after a phone edit, a phone delete racing an end ----------
+
+
+async def test_ending_a_phone_sleep_whose_start_is_ahead_of_this_clock_writes_one_minute(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    engine, _ = await engine_with_phone_sleep(
+        client, fake_server, start=now() + timedelta(seconds=30)
+    )
+
+    ended = await engine.end_sleep(client, SLEEP_ID)
+
+    assert ended.duration == 1
+    assert decode(nth_post(fake_server, 0))["duration"] == 1
+
+
+async def test_ending_a_sleep_this_device_started_slightly_ahead_writes_one_minute(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    seed(fake_server)
+    engine = await synced_engine(client)
+    sleep = await engine.start_sleep(client, BABY_ID, start=now() + timedelta(seconds=30))
+
+    ended = await engine.end_sleep(client, sleep.object_id)
+
+    assert ended.duration == 1
+
+
+async def test_an_end_exactly_at_the_start_writes_one_minute(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    engine, begin = await engine_with_phone_sleep(client, fake_server)
+
+    ended = await engine.end_sleep(client, SLEEP_ID, end=begin)
+
+    assert ended.duration == 1
+
+
+async def test_an_end_far_in_the_future_is_clamped_to_now_with_a_warning(
+    client: BabyTrackerClient, fake_server: FakeSyncServer, caplog: pytest.LogCaptureFixture
+) -> None:
+    engine, begin = await engine_with_phone_sleep(
+        client, fake_server, start=now() - timedelta(minutes=20)
+    )
+
+    with caplog.at_level(logging.WARNING, logger="pybabytracker"):
+        ended = await engine.end_sleep(client, SLEEP_ID, end=now() + timedelta(hours=3))
+
+    assert ended.duration == 20
+    assert any("future" in r.getMessage() for r in caplog.records)
+
+
+async def test_an_end_within_a_minute_ahead_is_kept(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    engine, begin = await engine_with_phone_sleep(
+        client, fake_server, start=now() - timedelta(minutes=20)
+    )
+
+    ended = await engine.end_sleep(client, SLEEP_ID, end=begin + timedelta(minutes=20, seconds=40))
+
+    assert ended.duration == 21
+
+
+async def test_a_retry_after_a_late_end_and_a_synced_phone_edit_returns_the_sleep(
+    quick_client: BabyTrackerClient,  # noqa: F811
+    fake_server: FakeSyncServer,
+) -> None:
+    engine, _ = await engine_with_phone_sleep(quick_client, fake_server)
+    engine = SyncEngine.from_dict(engine.to_dict(), unknown_outcome_grace=5.0)
+    fake_server.post_script = ["timeout-late"]
+    with pytest.raises(BabyTrackerConnectionError):
+        await engine.end_sleep(quick_client, SLEEP_ID)
+    await asyncio.sleep(fake_server.post_stall)  # HA's end lands
+    edited = {**decode(nth_post(fake_server, 0)), "note": "edited on the phone"}
+    edited["timestamp"] = stamp(now() + timedelta(minutes=1))
+    fake_server.add_transaction(PHONE, OP_UPDATE, edited)
+    await engine.sync(quick_client)  # brings in HA's own end and the phone's edit
+
+    ended = await engine.end_sleep(quick_client, SLEEP_ID)
+
+    assert post_numbers(fake_server) == [1]
+    assert ended.note == "edited on the phone"
+    assert not ended.is_running
+    restored = SyncEngine.from_dict(json.loads(json.dumps(engine.to_dict())))
+    assert (await restored.end_sleep(quick_client, SLEEP_ID)).object_id == SLEEP_ID
+    assert post_numbers(fake_server) == [1]
+
+
+async def test_a_phone_delete_racing_this_devices_end_leaves_the_ended_sleep(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    """Pins today's merge: the app's delete carries the record's unbumped timestamp, so this
+    device's later end (a newer timestamp) outlives it, here and on a replay. The app's own
+    handling is checked on the test iPad in #20."""
+    engine, begin = await engine_with_phone_sleep(client, fake_server)
+    deleted = payload_for("Sleep", SLEEP_ID, time=stamp(begin), timestamp=stamp(begin), duration=0)
+    fake_server.add_transaction(PHONE, OP_DELETE, {**deleted, "newFlage": "false"})
+
+    await engine.end_sleep(client, SLEEP_ID)
+    await engine.sync(client)
+
+    [only] = sleeps(engine)
+    assert only.object_id == SLEEP_ID
+    assert not only.is_running
+    replayed = SyncEngine()
+    await replayed.sync(client)
+    assert [s.to_payload() for s in sleeps(replayed)] == [only.to_payload()]

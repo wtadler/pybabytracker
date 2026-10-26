@@ -84,7 +84,6 @@ from typing import Any, Protocol
 
 from .builders import (
     Draft,
-    check_sleep_end,
     draft_bottle,
     draft_diaper,
     draft_nursing,
@@ -92,6 +91,7 @@ from .builders import (
     draft_sleep,
     draft_sleep_start,
     ended_sleep_payload,
+    resolve_sleep_end,
 )
 from .client import Device, RawTransaction
 from .exceptions import (
@@ -250,6 +250,7 @@ class SyncEngine:
         self._pending: _Pending | None = None
         self._created: set[str] = set()
         self._add_numbers: dict[str, int] = {}  # object_id -> number of this device's add
+        self._own_updates: set[str] = set()  # objects this device posted an update (an end) to
         self._lock = asyncio.Lock()
 
     @property
@@ -448,42 +449,54 @@ class SyncEngine:
         """End a running sleep, whichever device started it: post an update (opcode 1).
 
         This is the one edit the library makes to a record it may not have created. Like the
-        app, the update carries the record as last saved with only ``duration`` (whole minutes,
-        rounded as in ``add_sleep``, at least 1, clamped to 24 hours with a warning),
-        ``newFlage`` "false", and ``timestamp`` changed. The timestamp is the write time, or one
-        second past the stored one if that is ahead of this clock, so the update wins the merge
-        on every device. ``end`` (aware) defaults to now and must be after the sleep's start.
+        app, the update carries the record as last saved with only ``duration``, ``newFlage``
+        "false", and ``timestamp`` changed. The timestamp is the write time, or one second past
+        the stored one if that is ahead of this clock, so the update wins the merge on every
+        device.
+
+        ``end`` (aware) defaults to now. The duration is whole minutes, rounded as in
+        ``add_sleep`` (see ``builders.resolve_sleep_end``): an end more than a minute in the
+        future is clamped to now, an end at or up to a minute before the start (a clock running
+        fast) is 1 minute, and a sleep longer than 24 hours is 1,440 minutes; each clamp is
+        logged. An end further before the start raises ``ValueError``.
 
         Refused before any request: ``RecordNotFoundError`` for a record never seen or deleted,
         ``WrongRecordTypeError`` for a record that isn't a ``Sleep``, ``TimerNotRunningError``
-        for a sleep whose duration isn't 0. A sleep this device already ended (its newest version
-        is this device's update) is returned as is with nothing posted, so a retry after a write
-        that landed late, or a second call racing the first, is safe.
+        for a finished sleep. A finished sleep this device ended (its own end update is in this
+        device's log, whatever other devices edited since) is returned as is with nothing posted,
+        so a retry after a write that landed late, or a second call racing the first, is safe.
         """
         object_id = object_id.upper()
-        finish = end if end is not None else datetime.now(UTC)
         async with self._lock:
             self._check_can_write(target)
-            if (done := self._ended_or_running(object_id)) is not None:
-                return done
-            check_sleep_end(self._records[object_id], finish)  # type: ignore[arg-type]
+            sleep, ended = self._endable(object_id)
+            if ended:
+                return sleep
+            now = datetime.now(UTC)
+            resolve_sleep_end(sleep, end if end is not None else now, now)  # refuse bad input
             number = await self._prepare(target)
             # Catching up this device's own log may have brought in an earlier end that landed.
-            if (done := self._ended_or_running(object_id)) is not None:
-                return done
-            running = self._records[object_id]
-            assert isinstance(running, Sleep)
+            sleep, ended = self._endable(object_id)
+            if ended:
+                return sleep
+            now = datetime.now(UTC)
+            finish = resolve_sleep_end(sleep, end if end is not None else now, now)
+            if finish.future_clamped:
+                _LOGGER.warning("The end of sleep %s is in the future; ending it now", object_id)
+            if finish.long_clamped:
+                _LOGGER.warning("Sleep %s ran longer than 24 hours; writing 24 hours", object_id)
             stamp = _now()
-            if running.timestamp is not None and running.timestamp >= stamp:
-                stamp = running.timestamp.astimezone(UTC) + timedelta(seconds=1)
-            ended = decode_payload(ended_sleep_payload(running, finish, stamp))
-            assert isinstance(ended, Sleep)
-            await self._send(target, number, OP_UPDATE, encode_transaction(ended))
-            return ended
+            if sleep.timestamp is not None and sleep.timestamp >= stamp:
+                stamp = sleep.timestamp.astimezone(UTC) + timedelta(seconds=1)
+            payload = ended_sleep_payload(sleep, finish.minutes, stamp)
+            ended_sleep = decode_payload(payload)
+            assert isinstance(ended_sleep, Sleep)
+            await self._send(target, number, OP_UPDATE, encode_transaction(ended_sleep))
+            return ended_sleep
 
-    def _ended_or_running(self, object_id: str) -> Sleep | None:
-        """``None`` if ``object_id`` is a running sleep; the sleep if this device already ended
-        it; otherwise raise why it can't be ended."""
+    def _endable(self, object_id: str) -> tuple[Sleep, bool]:
+        """The sleep ``object_id`` names and whether this device already ended it (its own end
+        update is in this device's log); else raise why it can't be ended."""
         record = self._records.get(object_id)
         if record is None:
             if object_id in self._tombstones:
@@ -494,10 +507,9 @@ class SyncEngine:
                 f"record {object_id} is a {record.record_type or 'record'}, not a Sleep"
             )
         if record.is_running:
-            return None
-        version = self._versions[object_id]
-        if version.device_uuid == self._device_uuid and version.rank == _RANK_UPDATE:
-            return record
+            return record, False
+        if object_id in self._own_updates:
+            return record, True
         raise TimerNotRunningError(f"sleep {object_id} isn't running")
 
     async def _add[R: Record](
@@ -721,6 +733,8 @@ class SyncEngine:
         if device_uuid == self._device_uuid and transaction.op_code == OP_ADD:
             self._created.add(record.object_id)
             self._add_numbers[record.object_id] = transaction.sync_id
+        if device_uuid == self._device_uuid and transaction.op_code == OP_UPDATE:
+            self._own_updates.add(record.object_id)
         stamp = record.timestamp.timestamp() if record.timestamp is not None else 0.0
         version = _Version(stamp, _OP_RANKS[transaction.op_code], device_uuid, transaction.sync_id)
         if transaction.op_code == OP_DELETE:
@@ -790,6 +804,7 @@ class SyncEngine:
             "pending": self._pending.to_dict() if self._pending is not None else None,
             "created": sorted(self._created),
             "created_numbers": dict(sorted(self._add_numbers.items())),
+            "own_updates": sorted(self._own_updates),
             "last_seen": dict(sorted(self._last_seen.items())),
             "records": [
                 {"version": self._versions[i].to_dict(), "payload": r.to_payload()}
@@ -840,6 +855,7 @@ class SyncEngine:
             for i, n in data.get("created_numbers", {}).items()
             if str(i) in engine._created
         }
+        engine._own_updates = {str(i) for i in data.get("own_updates", [])}
         for entry in data["records"]:
             if version == 1:
                 record = decode_payload(entry)
