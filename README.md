@@ -56,8 +56,8 @@ python -m pybabytracker --probe-history
 The tool signs in as a separate device named "Home Assistant (dev)". Its ID is made once and
 kept in `.pybabytracker-device.json` (gitignored). `--probe-history` reads every device's log
 from 0 and reports how many transactions come back versus its `LastSyncID`, the lowest and
-highest numbers returned, and a verdict (full, paged, starts at K with older numbers trimmed, or
-gaps), then whether the probe device now appears in the device list. It only reads.
+highest numbers returned, and a verdict (full, paged, paged newest first, starts at K with older
+numbers trimmed, duplicates, or gaps), then whether the probe device now appears in the device list. It only reads.
 
 ## Develop
 
