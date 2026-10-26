@@ -49,3 +49,7 @@ class RecordNotFoundError(WriteError):
 
 class WriteOutcomeUnknownError(WriteError):
     """The previous write's outcome isn't known yet."""
+
+
+class ObjectIdInUseError(ValueError):
+    """The object_id passed to an add already belongs to another record."""

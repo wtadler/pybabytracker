@@ -23,6 +23,7 @@ from pybabytracker import (
     DIAPER_WET,
     OP_ADD,
     OP_DELETE,
+    UNIT_OUNCES,
     AuthenticationError,
     BabyTrackerClient,
     BabyTrackerConnectionError,
@@ -30,10 +31,13 @@ from pybabytracker import (
     NoResponseError,
     NotOwnRecordError,
     NotSyncedError,
+    ObjectIdInUseError,
     ProtocolError,
     RecordNotFoundError,
     SyncEngine,
     UnknownBabyError,
+    Volume,
+    WriteError,
     WriteOutcomeUnknownError,
 )
 
@@ -1008,3 +1012,36 @@ async def test_catching_up_this_devices_own_log_pages_through_it(
     assert post_numbers(fake_server)[-1] == 7
     assert engine.last_seen[PROBE_UUID] == 7
     assert {rid(200 + n) for n in range(5)} <= set(engine.records)
+
+
+async def test_an_object_id_held_by_a_synced_record_raises_object_id_in_use(
+    quick_client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    seed(fake_server)
+    engine = await synced_engine(quick_client)
+
+    with pytest.raises(ObjectIdInUseError):
+        await engine.add_diaper(quick_client, BABY_ID, DIAPER_WET, object_id=rid(1))
+
+    assert own_posts(fake_server) == []
+
+
+async def test_an_object_id_held_by_this_devices_record_of_another_type_raises_object_id_in_use(
+    quick_client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    seed(fake_server)
+    engine = await synced_engine(quick_client)
+    object_id = "EEEEEEEE-0000-4000-8000-000000000003"
+    await engine.add_diaper(quick_client, BABY_ID, DIAPER_WET, object_id=object_id)
+
+    with pytest.raises(ObjectIdInUseError):
+        await engine.add_pumped(
+            quick_client, BABY_ID, volume=Volume(4, UNIT_OUNCES), object_id=object_id
+        )
+
+    assert len(own_posts(fake_server)) == 1
+
+
+def test_object_id_in_use_is_still_a_value_error() -> None:
+    assert issubclass(ObjectIdInUseError, ValueError)
+    assert not issubclass(ObjectIdInUseError, WriteError)

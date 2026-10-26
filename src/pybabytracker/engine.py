@@ -85,6 +85,7 @@ from .exceptions import (
     NoResponseError,
     NotOwnRecordError,
     NotSyncedError,
+    ObjectIdInUseError,
     ProtocolError,
     RecordNotFoundError,
     TransactionDecodeError,
@@ -423,12 +424,12 @@ class SyncEngine:
                     if isinstance(existing, draft.record_type):
                         return existing  # an earlier attempt of this write landed
                     if existing is not None:
-                        raise ValueError(
+                        raise ObjectIdInUseError(
                             f"object_id {object_id} belongs to a record of another type"
                         )
                     raise RecordNotFoundError(f"record {object_id} was added and then deleted")
                 if object_id in self._records or object_id in self._tombstones:
-                    raise ValueError(f"object_id {object_id} belongs to another record")
+                    raise ObjectIdInUseError(f"object_id {object_id} belongs to another record")
             record = draft.build(object_id or str(uuid.uuid4()).upper(), baby, _now())
             await self._send(target, number, OP_ADD, encode_transaction(record))
             return record
