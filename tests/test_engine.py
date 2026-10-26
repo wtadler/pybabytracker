@@ -537,7 +537,7 @@ def test_a_version_1_state_loads_with_no_tombstones() -> None:
     }
     engine = SyncEngine.from_dict(old)
     assert engine.records[rid(1)].note == "kept"
-    assert engine.to_dict()["version"] == 2
+    assert engine.to_dict()["version"] == 3
     assert engine.to_dict()["tombstones"] == []
     engine.apply(
         HIGH,

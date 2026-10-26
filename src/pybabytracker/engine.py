@@ -5,11 +5,14 @@ Rules:
 - Records are keyed by ``objectID``. An add or update (opcodes 0 and 1) stores the record. A
   delete (opcode 2) removes it and leaves a tombstone, so a delete that arrives before the add
   it targets still wins.
-- Each stored record and tombstone carries a version: the record's ``timestamp``, the device,
-  and the sync number. Within one device's log, later numbers always win (log order). Across
-  devices the result doesn't depend on which device the engine fetched first:
+- Each stored record and tombstone carries a version: the record's ``timestamp``, the op rank
+  (add 0, update 1, delete 2), the device, and the sync number. The rank breaks a tie at an
+  equal timestamp, because an update or delete necessarily comes after the add it follows.
+  Within one device's log, later numbers always win (log order). Across devices the result
+  doesn't depend on which device the engine fetched first:
 
-  - An add or update replaces a stored record if its ``(timestamp, device, number)`` is newer.
+  - An add or update replaces a stored record if its ``(timestamp, rank, device, number)`` is
+    newer.
   - A delete removes a stored record unless the record's timestamp is newer than the delete's.
   - An add or update from another device brings a deleted record back only with a strictly
     newer timestamp than the tombstone.
@@ -45,7 +48,10 @@ from .models import (
 
 _LOGGER = logging.getLogger(__name__)
 
-STATE_VERSION = 2
+STATE_VERSION = 3
+
+_RANK_ADD, _RANK_UPDATE, _RANK_DELETE = 0, 1, 2
+_OP_RANKS = {OP_ADD: _RANK_ADD, OP_UPDATE: _RANK_UPDATE, OP_DELETE: _RANK_DELETE}
 
 
 class SyncSource(Protocol):
@@ -61,18 +67,30 @@ class SyncSource(Protocol):
 @dataclass(frozen=True, slots=True)
 class _Version:
     timestamp: float
+    rank: int
     device_uuid: str
     sync_id: int
 
-    def key(self) -> tuple[float, str, int]:
-        return (self.timestamp, self.device_uuid, self.sync_id)
+    def key(self) -> tuple[float, int, str, int]:
+        return (self.timestamp, self.rank, self.device_uuid, self.sync_id)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"timestamp": self.timestamp, "device": self.device_uuid, "sync_id": self.sync_id}
+        return {
+            "timestamp": self.timestamp,
+            "rank": self.rank,
+            "device": self.device_uuid,
+            "sync_id": self.sync_id,
+        }
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> _Version:
-        return cls(float(data["timestamp"]), str(data["device"]), int(data["sync_id"]))
+    def from_dict(cls, data: Mapping[str, Any], default_rank: int) -> _Version:
+        """Version 2 state has no rank; ``default_rank`` stands in for it."""
+        return cls(
+            float(data["timestamp"]),
+            int(data.get("rank", default_rank)),
+            str(data["device"]),
+            int(data["sync_id"]),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,7 +172,7 @@ class SyncEngine:
                 "Unknown record type %r (%s); keeping the raw payload", record.record_type, where
             )
         stamp = record.timestamp.timestamp() if record.timestamp is not None else 0.0
-        version = _Version(stamp, device_uuid, transaction.sync_id)
+        version = _Version(stamp, _OP_RANKS[transaction.op_code], device_uuid, transaction.sync_id)
         if transaction.op_code == OP_DELETE:
             self._delete(record.object_id, version)
         else:
@@ -226,9 +244,13 @@ class SyncEngine:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> SyncEngine:
-        """Rebuild an engine from ``to_dict`` output. Version 1 state loads with no tombstones."""
+        """Rebuild an engine from ``to_dict`` output. Versions 1 and 2 still load.
+
+        Version 1 has no tombstones. Version 2 has no op rank, so its records load as adds and
+        its tombstones as deletes.
+        """
         version = data.get("version")
-        if version not in (1, STATE_VERSION):
+        if version not in (1, 2, STATE_VERSION):
             raise ValueError(f"unsupported engine state version: {version!r}")
         engine = cls()
         engine._last_seen = {str(k): int(v) for k, v in data["last_seen"].items()}
@@ -236,14 +258,16 @@ class SyncEngine:
             if version == 1:
                 record = decode_payload(entry)
                 stamp = record.timestamp.timestamp() if record.timestamp is not None else 0.0
-                stored = _Version(stamp, "", 0)
+                stored = _Version(stamp, _RANK_ADD, "", 0)
             else:
                 record = decode_payload(entry["payload"])
-                stored = _Version.from_dict(entry["version"])
+                stored = _Version.from_dict(entry["version"], _RANK_ADD)
             engine._records[record.object_id] = record
             engine._versions[record.object_id] = stored
         for entry in data.get("tombstones", []):
-            engine._tombstones[str(entry["object_id"])] = _Version.from_dict(entry["version"])
+            engine._tombstones[str(entry["object_id"])] = _Version.from_dict(
+                entry["version"], _RANK_DELETE
+            )
         return engine
 
 
