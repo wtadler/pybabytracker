@@ -134,11 +134,17 @@ def test_a_pump_that_carries_a_baby_still_decodes_and_round_trips() -> None:
     assert decode_transaction(encode_transaction(record)).to_payload() == payload
 
 
-def test_a_pump_with_a_baby_id_only_still_decodes() -> None:
+def test_a_pump_with_a_baby_id_only_still_decodes_and_belongs_to_no_baby() -> None:
     payload = pump_without_baby(rid(1), babyID=BABY_ID)
     record = decode_payload(payload)
     assert type(record) is Pump
     assert record.to_payload() == payload
+    assert record.baby_id is None
+    engine = SyncEngine()
+    engine.apply(PHONE, [RawTransaction(1, OP_ADD, encode_b64(payload))])
+    assert rid(1) in engine.records
+    assert engine.latest_records(BABY_ID) == {}
+    assert engine.babies() == {}
 
 
 # --- no baby is derived from a pump ---------------------------------------------------------------

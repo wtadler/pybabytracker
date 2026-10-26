@@ -374,6 +374,11 @@ class Pump(Record):
     def right_volume(self) -> Volume | None:
         return _volume_of(self.right_amount, self.is_english_scale)
 
+    @property
+    def baby_id(self) -> str | None:
+        # A pump belongs to the account: a stray baby or babyID key is kept in extra, never read.
+        return None
+
 
 @_register
 @dataclass(kw_only=True)
