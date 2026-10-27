@@ -96,6 +96,8 @@ key.
   no `baby` key, like the app's. Give the total as `amount`, or the side volumes (not both):
   with only `amount` the payload has no per-side amounts, and with sides `amount` is their sum,
   a side left out is written as 0 in the other's unit, and both sides must use one unit.
+  With no volume at all, minutes are required and the payload carries the durations and no
+  `amount` (a timer stopped before the volume is known).
   `sides` is written as 0, as captured. Babies are never derived from pumps, and a pump that
   carries a `baby` still decodes (kept raw, not read). `engine.latest_pump()` is the newest pump
   on the account; `latest_records(baby_id)` never includes pumps.
