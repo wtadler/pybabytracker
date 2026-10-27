@@ -52,8 +52,9 @@ class VolumeMeasure:
     """A ``VolumeMeasure`` payload object: ``{"BCObjectType", "englishMeasure", "value"}``.
 
     The raw object is kept as is, so unknown keys and odd values survive a round trip.
-    ``englishMeasure`` "true" means ounces; anything else, or no key, means milliliters. That is an
-    assumption: only "true" has been observed in captures.
+    ``englishMeasure`` "true" means ounces and "false" means milliliters, both observed in captures
+    (2026-10-26; a metric write carries the number as entered). Any other value, or no key, is read
+    as milliliters.
     """
 
     def __init__(
