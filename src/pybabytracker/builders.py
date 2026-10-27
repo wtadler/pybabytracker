@@ -355,12 +355,14 @@ def draft_pump(
     time: datetime | None,
     timezone_offset: int | None,
     note: str,
+    default_unit: str = UNIT_OUNCES,
 ) -> Draft[Pump]:
     """A pumping session, which belongs to the account (no baby). Give the total as ``amount``,
     or the volume of one or both sides. With only a total the payload has no per-side amounts,
     like the app's own pump; with sides, ``amount`` is their sum and a side left out is written
     as 0 in the other side's unit. With no volume at all, the session needs a length: the payload
-    then has the durations and no ``amount``, for a timer stopped before the volume is known.
+    then has the durations and an ``amount`` of 0 in ``default_unit``, as the app writes a timed
+    pump whose volume wasn't entered (never a missing key).
     ``time`` is the session's start."""
     if amount is not None and (left_volume is not None or right_volume is not None):
         raise ValueError("give a pump's total volume or its side volumes, not both")
@@ -368,11 +370,13 @@ def draft_pump(
     right = _minutes(right_minutes, "right_minutes")
     if amount is None and left_volume is None and right_volume is None and left + right == 0:
         raise ValueError("a pump needs a volume for at least one side, or a length")
+    if default_unit not in (UNIT_OUNCES, UNIT_MILLILITERS):
+        raise ValueError(f"unknown volume unit {default_unit!r}")
     per_side = amount is None and (left_volume is not None or right_volume is not None)
-    unit: str | None = None
+    unit: str = default_unit
     left_amount: int | float = 0
     right_amount: int | float = 0
-    total: int | float | None = None
+    total: int | float = 0
     if amount is not None:
         total_v = _checked(amount, "amount")
         unit = total_v.unit
@@ -387,17 +391,15 @@ def draft_pump(
         left_amount = left_v.value if left_v is not None else 0
         right_amount = right_v.value if right_v is not None else 0
         total = round(left_amount + right_amount, 6)
-    if total is not None and total <= 0:
+    if (amount is not None or per_side) and total <= 0:
         raise ValueError("a pump's total volume must be more than zero")
     side = _side(finish_side, left_amount > 0 or left > 0, right_amount > 0 or right > 0)
     event, tz, text = _common(time, timezone_offset, note)
 
     def build(object_id: str, baby: Baby | None, timestamp: datetime) -> Pump:
         # A pump never carries a baby, whatever the caller passes.
-        volumes: dict[str, Any] = {}
-        if unit is not None and total is not None:
-            volumes["amount"] = _measure(Volume(total, unit))
-        if per_side and unit is not None:
+        volumes: dict[str, Any] = {"amount": _measure(Volume(total, unit))}
+        if per_side:
             volumes["left_amount"] = _measure(Volume(left_amount, unit))
             volumes["right_amount"] = _measure(Volume(right_amount, unit))
         return Pump(

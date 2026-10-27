@@ -114,6 +114,7 @@ from .models import (
     OP_DELETE,
     OP_UPDATE,
     RECORD_TYPES,
+    UNIT_OUNCES,
     Baby,
     Diaper,
     Formula,
@@ -423,6 +424,7 @@ class SyncEngine:
         timezone_offset: int | None = None,
         note: str = "",
         object_id: str | None = None,
+        default_unit: str = UNIT_OUNCES,
     ) -> Pump:
         """Post a pumping session. A pump belongs to the account, so it takes no baby.
 
@@ -430,8 +432,8 @@ class SyncEngine:
         mixed with ``amount``). With sides the total is their sum and a side left out is written
         as 0; with only ``amount`` the payload has no per-side amounts, like the app's own
         pump. With no volume at all the minutes are required, and the payload has the durations
-        and no ``amount`` (a timer stopped before the volume is known). ``time`` is the session's
-        start (default now). ``finish_side`` defaults as in ``add_nursing``.
+        and an ``amount`` of 0 in ``default_unit``, as the app writes a timed pump with no volume. ``time`` is the
+        session's start (default now). ``finish_side`` defaults as in ``add_nursing``.
         """
         draft = draft_pump(
             amount=amount,
@@ -443,6 +445,7 @@ class SyncEngine:
             time=time,
             timezone_offset=timezone_offset,
             note=note,
+            default_unit=default_unit,
         )
         return await self._add(target, None, draft, object_id)
 

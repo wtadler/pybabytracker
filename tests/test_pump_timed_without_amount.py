@@ -2,7 +2,8 @@
 
 The app writes most pumps with only a total ``amount`` and no per-side keys, and a timed
 both-sides pump with equal ``leftDuration`` and ``rightDuration``. A session whose volume isn't
-known yet carries the durations and no ``amount`` at all.
+known yet carries the durations and an ``amount`` of 0, as every timed pump the app saved
+without a volume does (never a missing key).
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from test_write_types import posted, ready
 from pybabytracker import SIDE_LEFT, SIDE_RIGHT, BabyTrackerClient, Pump, Volume, decode_payload
 
 
-async def test_a_pump_with_only_durations_has_no_amount_and_no_side_amounts(
+async def test_a_pump_with_only_durations_has_a_zero_amount_and_no_side_amounts(
     client: BabyTrackerClient, fake_server: FakeSyncServer
 ) -> None:
     engine = await ready(client, fake_server)
@@ -25,7 +26,11 @@ async def test_a_pump_with_only_durations_has_no_amount_and_no_side_amounts(
     await engine.add_pump(client, left_minutes=12, right_minutes=12)
 
     payload = posted(fake_server)
-    assert "amount" not in payload
+    assert payload["amount"] == {
+        "BCObjectType": "VolumeMeasure",
+        "englishMeasure": "true",
+        "value": 0,
+    }
     assert "leftAmount" not in payload
     assert "rightAmount" not in payload
     assert "baby" not in payload
@@ -42,7 +47,7 @@ async def test_a_pump_with_only_durations_decodes_with_no_volume(
     record = await engine.add_pump(client, left_minutes=7, right_minutes=7)
 
     assert isinstance(record, Pump)
-    assert record.volume is None
+    assert record.volume == Volume(0, "oz")
     assert record.left_volume is None
     assert record.right_volume is None
     assert (record.left_duration, record.right_duration) == (7, 7)
@@ -164,3 +169,39 @@ async def test_a_duration_only_pump_with_sides_volumes_is_unchanged(
     assert payload["amount"]["value"] == 5
     assert payload["leftAmount"]["value"] == 2
     assert payload["rightAmount"]["value"] == 3
+
+
+async def test_a_zero_amount_pump_uses_the_given_default_unit(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    engine = await ready(client, fake_server)
+
+    record = await engine.add_pump(client, left_minutes=6, right_minutes=6, default_unit="ml")
+
+    payload = posted(fake_server)
+    assert payload["amount"]["englishMeasure"] == "false"
+    assert payload["amount"]["value"] == 0
+    assert record.volume == Volume(0, "ml")
+    assert "leftAmount" not in payload
+
+
+async def test_a_default_unit_changes_nothing_when_a_volume_is_given(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    engine = await ready(client, fake_server)
+
+    await engine.add_pump(client, amount=Volume(4, "oz"), default_unit="ml")
+
+    assert posted(fake_server)["amount"]["englishMeasure"] == "true"
+
+
+async def test_an_unknown_default_unit_is_refused_with_no_request(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    engine = await ready(client, fake_server)
+    fake_server.requests.clear()
+
+    with pytest.raises(ValueError, match="unit"):
+        await engine.add_pump(client, left_minutes=5, default_unit="cups")
+
+    assert fake_server.requests == []
