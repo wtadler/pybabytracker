@@ -10,34 +10,17 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: true
-      matrix:
-        python-version: ["3.12", "3.13", "3.14"]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: pyproject.toml
-      - name: Install
-        run: pip install -e ".[dev]"
-      - name: pytest
-        run: pytest
-      - name: mypy
-        run: mypy
-      - name: ruff check
-        run: ruff check .
-      - name: ruff format
-        run: ruff format --check .
+    uses: ./.github/workflows/ci.yml
+    with:
+      no-cache: true
 
   build:
     needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
@@ -46,7 +29,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: python scripts/check_version.py "$TAG"
       - name: Install build tools
-        run: pip install uv twine
+        run: pip install uv==0.13.6 twine==7.0.0
       - name: Build sdist and wheel
         run: uv build
       - name: Check the artifacts
@@ -73,4 +56,4 @@ jobs:
         with:
           name: dist
           path: dist/
-      - uses: pypa/gh-action-pypi-publish@aef6c9b6e301dc803e1bc9133e9ce67ae9b0906b # v1.14.3
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3

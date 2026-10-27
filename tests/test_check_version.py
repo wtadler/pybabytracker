@@ -113,3 +113,47 @@ def test_defaults_to_the_packages_real_version_file() -> None:
         cwd=SCRIPT.parent.parent,
     )
     assert bad.returncode == 1
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        "0.2.0-rc1",
+        "0.2.0.rc1",
+        "0.2.0RC1",
+        "v0.2.0",
+        "0.2.0+Local",
+        "1.0.0-1",
+        "01.2.0",
+        "abc",
+        "0.2.0 beta",
+    ],
+)
+def test_non_canonical_version_in_file_is_rejected_even_when_tag_matches(
+    version: str, tmp_path: Path
+) -> None:
+    result = run(version, version, tmp_path)
+    assert result.returncode == 1
+    assert "PEP 440" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        "0",
+        "1.0",
+        "0.2.0",
+        "2026.10",
+        "1!2.0.0",
+        "0.2.0a1",
+        "0.2.0b2",
+        "0.2.0rc1",
+        "0.2.0.post1",
+        "0.2.0.dev3",
+        "0.2.0rc1.post2.dev4",
+        "0.2.0+local.1",
+    ],
+)
+def test_canonical_versions_are_accepted(version: str, tmp_path: Path) -> None:
+    result = run(f"v{version}", version, tmp_path)
+    assert result.returncode == 0, result.stderr
