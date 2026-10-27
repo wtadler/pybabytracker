@@ -182,3 +182,30 @@ read only the `BT_TEST_*` credentials, and keep their device ID and engine state
 uv venv --python 3.12 && uv pip install -e ".[dev]"
 pytest && mypy && ruff check .
 ```
+
+## Release
+
+Releases publish to PyPI from a `v<version>` tag such as `v0.2.0` through trusted publishing: there is no API token
+anywhere. `.github/workflows/release.yml` runs on that tag and needs the tests to pass, then
+builds the sdist and wheel, checks them with `twine check --strict`, installs the wheel in a clean
+venv, and publishes from the GitHub environment named `pypi`.
+
+To cut a release:
+
+1. Set `__version__` in `src/pybabytracker/_version.py` (for example `0.2.0`, or `0.2.0rc1` for a
+   pre-release) and merge it to `main`.
+2. Tag that commit with the same version and push the tag: `git tag v0.2.0 && git push origin v0.2.0`.
+   The workflow fails before building if the tag and `_version.py` disagree
+   (`python scripts/check_version.py v0.2.0` runs the same check locally).
+
+One-time setup, done on PyPI and in GitHub before the first tag:
+
+1. On PyPI, add a pending publisher at <https://pypi.org/manage/account/publishing/> for
+   the project name `pybabytracker`, with owner `wtadler`, repository `pybabytracker`, workflow
+   `release.yml`, and environment `pypi`.
+2. In the repository settings, create an environment named `pypi`, and under deployment branches
+   and tags choose Selected branches and tags with the tag rule `v*`, so only a version tag can
+   reach the publish step (a branch could otherwise run the workflow with the publish
+   permission). Adding required reviewers there makes each publish wait for an approval.
+
+The first successful publish turns the pending publisher into a normal one.
