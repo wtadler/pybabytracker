@@ -288,6 +288,21 @@ class SyncEngine:
             key=lambda pair: (pair[1], pair[0]),
         )
 
+    def is_deleted(self, object_id: str) -> bool:
+        """Whether a record has been deleted and not added back since. Cheap: no state is encoded.
+
+        A record never seen, and one that exists, are both ``False``.
+        """
+        return object_id in self._tombstones
+
+    def deleted_ids(self) -> frozenset[str]:
+        """IDs of every deleted record that has not been added back, as a snapshot.
+
+        Of any type: a tombstone doesn't keep its record's type, so a caller after one type
+        (the babies, say) checks its own IDs with ``is_deleted``. Cheap: no state is encoded.
+        """
+        return frozenset(self._tombstones)
+
     async def add_diaper(
         self,
         target: WriteTarget,
