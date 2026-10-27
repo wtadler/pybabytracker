@@ -429,8 +429,9 @@ class SyncEngine:
         Give the total as ``amount``, or the volume of at least one side (one unit for both, not
         mixed with ``amount``). With sides the total is their sum and a side left out is written
         as 0; with only ``amount`` the payload has no per-side amounts, like the app's own
-        pump. ``time`` is the session's start (default now). ``finish_side`` defaults as in
-        ``add_nursing``.
+        pump. With no volume at all the minutes are required, and the payload has the durations
+        and no ``amount`` (a timer stopped before the volume is known). ``time`` is the session's
+        start (default now). ``finish_side`` defaults as in ``add_nursing``.
         """
         draft = draft_pump(
             amount=amount,

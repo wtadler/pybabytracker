@@ -465,7 +465,7 @@ async def test_a_pump_survives_a_state_snapshot(
     "kwargs",
     [
         {},
-        {"left_minutes": 5},
+        {"left_minutes": 0, "right_minutes": 0},
         {"amount": Volume(0, "oz")},
         {"amount": Volume(4, "oz"), "left_volume": Volume(2, "oz")},
         {"amount": Volume(4, "oz"), "right_volume": Volume(2, "oz")},
@@ -475,7 +475,7 @@ async def test_a_pump_survives_a_state_snapshot(
     ],
     ids=[
         "nothing",
-        "minutes only",
+        "zero minutes",
         "zero total",
         "total with left",
         "total with right",
