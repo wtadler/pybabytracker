@@ -246,25 +246,130 @@ async def test_an_ounce_volume_is_a_volume_measure_with_english_measure_true(
     }
 
 
-@pytest.mark.parametrize(
-    "call",
-    [
-        ("add_formula", {"volume": Volume(120, "ml")}),
-        ("add_pumped", {"volume": Volume(90, "ml")}),
-        ("add_pump", {"left_volume": Volume(60, "ml"), "left_minutes": 15}),
-        ("add_pump", {"left_volume": Volume(2, "oz"), "right_volume": Volume(60, "ml")}),
-    ],
-    ids=["formula", "pumped", "pump", "pump-mixed"],
-)
-async def test_a_milliliter_write_is_refused_with_no_request(
-    call: tuple[str, dict[str, Any]], client: BabyTrackerClient, fake_server: FakeSyncServer
+def metric_shape(value: float) -> dict[str, Any]:
+    return {"BCObjectType": "VolumeMeasure", "englishMeasure": "false", "value": value}
+
+
+async def test_a_metric_bottle_equals_the_captured_one_key_for_key(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    engine = await ready(client, fake_server)
+
+    await engine.add_formula(
+        client,
+        BABY_ID,
+        volume=Volume(120, "ml"),
+        time=at("2026-10-27 01:12:46 +0000"),
+        timezone_offset=UTC_MINUS_5,
+    )
+
+    payload = posted(fake_server)
+    assert payload["amount"] == metric_shape(120)
+    assert comparable(payload) == captured("M1")
+    assert set(payload) == captured_keys("M1")
+    assert nth_post(fake_server, 0)["OPCode"] == 0
+
+
+async def test_a_metric_pumped_bottle_is_written_in_milliliters(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    engine = await ready(client, fake_server)
+
+    await engine.add_pumped(client, BABY_ID, volume=Volume(90, "ml"))
+
+    assert posted(fake_server)["amount"] == metric_shape(90)
+
+
+async def test_a_metric_pump_equals_the_captured_pump_with_the_metric_flag(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    engine = await ready(client, fake_server)
+
+    await engine.add_pump(
+        client,
+        left_volume=Volume(60, "ml"),
+        right_volume=Volume(150, "ml"),
+        left_minutes=1,
+        right_minutes=1,
+        finish_side=SIDE_LEFT,
+        time=at("2026-10-26 16:55:15 +0000"),
+        timezone_offset=UTC_MINUS_5,
+    )
+
+    expected = captured("C3")
+    expected["amount"] = metric_shape(210)
+    expected["leftAmount"] = metric_shape(60)
+    expected["rightAmount"] = metric_shape(150)
+    payload = posted(fake_server)
+    assert comparable(payload) == expected
+    assert set(payload) == captured_keys("C3")
+
+
+async def test_a_metric_pump_total_has_no_side_amounts(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    engine = await ready(client, fake_server)
+
+    await engine.add_pump(client, amount=Volume(180, "ml"))
+
+    payload = posted(fake_server)
+    assert payload["amount"] == metric_shape(180)
+    assert "leftAmount" not in payload and "rightAmount" not in payload
+
+
+async def test_a_fractional_milliliter_volume_is_rounded_to_two_decimals(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    engine = await ready(client, fake_server)
+
+    await engine.add_formula(client, BABY_ID, volume=Volume(118.2957, "ml"))
+
+    assert posted(fake_server)["amount"] == metric_shape(118.3)
+
+
+async def test_a_metric_write_is_read_back_as_milliliters(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    engine = await ready(client, fake_server)
+
+    record = await engine.add_formula(client, BABY_ID, volume=Volume(120, "ml"))
+
+    assert record.volume == Volume(120, "ml")
+
+
+@pytest.mark.parametrize("value", [0, -5, math.nan, math.inf])
+async def test_a_bad_milliliter_volume_is_still_refused_with_no_request(
+    value: float, client: BabyTrackerClient, fake_server: FakeSyncServer
 ) -> None:
     engine = await ready(client, fake_server)
     fake_server.requests.clear()
-    method, kwargs = call
 
-    with pytest.raises(ValueError, match="metric volumes aren't supported"):
-        await write_named(engine, client, method, **kwargs)
+    with pytest.raises(ValueError):
+        await engine.add_formula(client, BABY_ID, volume=Volume(value, "ml"))
+
+    assert fake_server.requests == []
+
+
+async def test_a_pump_with_one_side_in_each_unit_is_refused_with_no_request(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    engine = await ready(client, fake_server)
+    fake_server.requests.clear()
+
+    with pytest.raises(ValueError, match="same unit"):
+        await engine.add_pump(client, left_volume=Volume(2, "oz"), right_volume=Volume(60, "ml"))
+
+    assert fake_server.requests == []
+
+
+async def test_an_unknown_unit_is_still_refused_with_no_request(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    engine = await ready(client, fake_server)
+    fake_server.requests.clear()
+
+    with pytest.raises(ValueError, match="unknown volume unit"):
+        await engine.add_formula(client, BABY_ID, volume=Volume(4, "cups"))
 
     assert fake_server.requests == []
 

@@ -61,7 +61,7 @@ from .models import (
     decode_transaction,
     encode_transaction,
 )
-from .times import format_time, from_unix, parse_time, to_unix
+from .times import format_time, from_unix, parse_time, standard_offset_seconds, to_unix
 
 __all__ = [
     "Allergen",
@@ -129,5 +129,6 @@ __all__ = [
     "format_time",
     "from_unix",
     "parse_time",
+    "standard_offset_seconds",
     "to_unix",
 ]

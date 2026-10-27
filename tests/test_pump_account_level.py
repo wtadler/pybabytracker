@@ -470,7 +470,7 @@ async def test_a_pump_survives_a_state_snapshot(
         {"amount": Volume(4, "oz"), "left_volume": Volume(2, "oz")},
         {"amount": Volume(4, "oz"), "right_volume": Volume(2, "oz")},
         {"amount": Volume(-1, "oz")},
-        {"amount": Volume(60, "ml")},
+        {"amount": Volume(0, "ml")},
         {"amount": 4},
     ],
     ids=[
@@ -480,7 +480,7 @@ async def test_a_pump_survives_a_state_snapshot(
         "total with left",
         "total with right",
         "negative total",
-        "milliliters",
+        "zero milliliters",
         "plain number",
     ],
 )

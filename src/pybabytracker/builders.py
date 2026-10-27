@@ -9,11 +9,14 @@ Conventions:
 
 - ``time`` is when the activity started (a nursing session, a sleep, a pump) or when it
   happened (a bottle, a diaper). It's written in UTC. ``timezone`` is seconds east of UTC,
-  defaulting to the offset of the time given.
+  defaulting to the offset of the time given. The app itself writes the zone's *standard*
+  offset all year, ignoring daylight saving (observed 2026-10-26), so pass that to match it:
+  ``standard_offset_seconds(tz, at)`` computes it. The default is the time's actual offset,
+  which in summer differs from the app's by an hour.
 - Volumes are ``Volume(value, unit)`` with unit ``"oz"`` or ``"ml"``, written as a
-  ``VolumeMeasure``: ``englishMeasure`` "true" for ounces, "false" for milliliters. Only the
-  ounce form has been captured; milliliters follow the model's assumption (see
-  ``VolumeMeasure``). Whole numbers are written as integers, like the capture.
+  ``VolumeMeasure``: ``englishMeasure`` "true" for ounces, "false" for milliliters, with the
+  number as given and no conversion. Both forms were captured from the app (ounces and
+  milliliters on 2026-10-26). Whole numbers are written as integers, like the capture.
 - Durations are whole minutes. A sleep's is its length rounded half up (the capture stored about
   30 seconds as 1 minute), and never less than 1 for a finished sleep, because 0 means a sleep
   in progress. Nursing and pump durations are given in whole minutes already.
@@ -99,12 +102,8 @@ def _number(value: float) -> int | float:
 def _checked(volume: object, name: str = "volume") -> Volume:
     if not isinstance(volume, Volume):
         raise ValueError(f"{name} must be a Volume(value, unit)")
-    if volume.unit == UNIT_MILLILITERS:
-        raise ValueError(
-            "metric volumes aren't supported until the app's metric format is confirmed: use ounces"
-        )
-    if volume.unit != UNIT_OUNCES:
-        raise ValueError(f"unknown {name} unit {volume.unit!r}: use 'oz'")
+    if volume.unit not in (UNIT_OUNCES, UNIT_MILLILITERS):
+        raise ValueError(f"unknown {name} unit {volume.unit!r}: use 'oz' or 'ml'")
     value = volume.value
     if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
         raise ValueError(f"{name} must be a finite number")

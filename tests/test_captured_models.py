@@ -394,7 +394,7 @@ def test_all_captured_fixtures_replay_in_one_log() -> None:
     result = engine.apply(DEVICE, [raw(f) for f in FIXTURES])
     assert result.applied == len(FIXTURES) and result.skipped == 0
     kinds = sorted(type(r).__name__ for r in engine.records.values())
-    assert kinds == ["Diaper", "Nursing", "Pump", "Pump", "Pumped", "Sleep"]
+    assert kinds == ["Diaper", "Formula", "Nursing", "Pump", "Pump", "Pumped", "Sleep"]
     assert FORMULA_ID not in engine.records
     for record in engine.records.values():
         assert not isinstance(record, UnknownRecord)
@@ -415,6 +415,14 @@ def test_op_constants_match_the_fixtures() -> None:
     assert BY_LABEL["C1 formula add"]["opcode"] == OP_ADD
     assert BY_LABEL["C5 sleep update at timer stop"]["opcode"] == OP_UPDATE
     assert BY_LABEL["C7 formula delete (timestamp not bumped)"]["opcode"] == OP_DELETE
+
+
+def test_the_captured_metric_bottle_reads_as_milliliters() -> None:
+    engine = SyncEngine()
+    engine.apply(DEVICE, [raw(BY_LABEL["M1 formula add, metric (120 mL)"])])
+    [record] = engine.records.values()
+    assert isinstance(record, Formula)
+    assert record.volume == Volume(120, "ml")
 
 
 def test_a_baby_payload_helper_is_unchanged() -> None:

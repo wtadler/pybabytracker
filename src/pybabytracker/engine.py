@@ -303,10 +303,12 @@ class SyncEngine:
 
         ``status`` is ``DIAPER_WET``, ``DIAPER_DIRTY``, or ``DIAPER_MIXED``. ``time`` (aware)
         defaults to now. ``timezone_offset`` (seconds east of UTC) defaults to ``time``'s offset.
-        ``object_id`` defaults to a new uppercase UUID4. Pass the same one to retry a write that
-        raised: if that write landed after all, its record is returned and nothing is posted.
-        Every ``add_*`` method shares these rules. Bad input raises ``ValueError`` before any
-        request.
+        The app itself writes the zone's *standard* offset all year, ignoring daylight saving
+        (-18000 for Eastern in July and January), so for a record that matches it pass
+        ``standard_offset_seconds(tz, time)``. ``object_id`` defaults to a new uppercase UUID4.
+        Pass the same one to retry a write that raised: if that write landed after all, its
+        record is returned and nothing is posted. Every ``add_*`` method shares these rules. Bad
+        input raises ``ValueError`` before any request.
         """
         draft = draft_diaper(status, time=time, timezone_offset=timezone_offset, note=note)
         return await self._add(target, baby_id, draft, object_id)

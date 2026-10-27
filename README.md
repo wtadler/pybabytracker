@@ -76,12 +76,13 @@ key.
 | `add_sleep(client, baby_id, start=, end=, ...)` | `Sleep` | a finished sleep |
 | `add_pump(client, amount=, ...)` or `add_pump(client, left_volume=, right_volume=, ...)` | `Pump` | a pumping session; belongs to the account, so no `baby_id` |
 
-- Volumes are `Volume(value, "oz")`, written as a `VolumeMeasure` with `englishMeasure` `"true"`,
-  rounded to 2 decimals (an integer when whole). **Milliliter writes are refused** with a
-  `ValueError` and no request: only ounces have been captured, and how the app stores a metric
-  amount isn't known yet. Reading milliliter records works as before.
+- Volumes are `Volume(value, "oz")` or `Volume(value, "ml")`, written as a `VolumeMeasure` with
+  `englishMeasure` `"true"` (ounces) or `"false"` (milliliters), rounded to 2 decimals (an integer
+  when whole). The number is written as given, with no conversion, as the app does.
 - `time` is when the activity started (or, for a bottle or diaper, when it happened), written in
-  UTC. `timezone_offset` (seconds east of UTC) defaults to the offset of the time given.
+  UTC. `timezone_offset` (seconds east of UTC) defaults to the offset of the time given. The app itself writes the zone's *standard* offset
+  all year, ignoring daylight saving, so to match it pass
+  `timezone_offset=standard_offset_seconds(tz, time)`: New York is -18000 in July and January.
 - Nursing: `time` is the session's start, as in the capture. Give `start_time`, or `end_time`
   (start is end minus the total minutes), or neither (the session just ended). `finish_side` is
   `SIDE_LEFT` or `SIDE_RIGHT`, defaulting to the last side used (right when both were). For a pump that default is a guess

@@ -307,5 +307,37 @@
       "timestamp": "2026-10-26 17:22:30 +0000",
       "timezone": -18000
     }
+  },
+  {
+    "label": "M1 formula add, metric (120 mL)",
+    "opcode": 0,
+    "sync_id": 12,
+    "transaction": "eyJCQ09iamVjdFR5cGUiOiJGb3JtdWxhIiwiYW1vdW50Ijp7IkJDT2JqZWN0VHlwZSI6IlZvbHVtZU1lYXN1cmUiLCJlbmdsaXNoTWVhc3VyZSI6ImZhbHNlIiwidmFsdWUiOjEyMH0sIm5ld0ZsYWdlIjoidHJ1ZSIsIm5vdGUiOiJNTDEiLCJvYmplY3RJRCI6IkNBRkUwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAxMiIsInBpY3R1cmVMb2FkZWQiOiJ0cnVlIiwicGljdHVyZU5vdGUiOltdLCJ0aW1lIjoiMjAyNi0xMC0yNyAwMToxMjo0NiArMDAwMCIsInRpbWVzdGFtcCI6IjIwMjYtMTAtMjcgMDE6MTM6MTMgKzAwMDAiLCJ0aW1lem9uZSI6LTE4MDAwLCJiYWJ5Ijp7IkJDT2JqZWN0VHlwZSI6IkJhYnkiLCJkb2IiOiIyMDI2LTEwLTAxIDEyOjAwOjAwICswMDAwIiwiZ2VuZGVyIjoidHJ1ZSIsIm5hbWUiOiJUZXN0IEJhYnkiLCJuZXdGbGFnZSI6ImZhbHNlIiwib2JqZWN0SUQiOiJCQkJCQkJCQi0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEiLCJwaWN0dXJlTmFtZSI6IiIsInRpbWVzdGFtcCI6IjE5NzAtMDEtMDEgMDA6MDA6MDAgKzAwMDAifX0=",
+    "payload": {
+      "BCObjectType": "Formula",
+      "amount": {
+        "BCObjectType": "VolumeMeasure",
+        "englishMeasure": "false",
+        "value": 120
+      },
+      "newFlage": "true",
+      "note": "ML1",
+      "objectID": "CAFE0000-0000-4000-8000-000000000012",
+      "pictureLoaded": "true",
+      "pictureNote": [],
+      "time": "2026-10-27 01:12:46 +0000",
+      "timestamp": "2026-10-27 01:13:13 +0000",
+      "timezone": -18000,
+      "baby": {
+        "BCObjectType": "Baby",
+        "dob": "2026-10-01 12:00:00 +0000",
+        "gender": "true",
+        "name": "Test Baby",
+        "newFlage": "false",
+        "objectID": "BBBBBBBB-0000-4000-8000-000000000001",
+        "pictureName": "",
+        "timestamp": "1970-01-01 00:00:00 +0000"
+      }
+    }
   }
 ]
