@@ -33,6 +33,7 @@ from test_writes import (
     synced_engine,
 )
 
+import pybabytracker.builders as pybabytracker_builders
 from pybabytracker import (
     OP_ADD,
     OP_DELETE,
@@ -81,6 +82,19 @@ def now() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)
 
 
+class _FixedNow:
+    """Stands in for ``datetime`` in ``pybabytracker.builders`` with a fixed ``now``."""
+
+    def __init__(self, fixed: datetime) -> None:
+        self._fixed = fixed
+
+    def now(self, tz: Any = None) -> datetime:
+        return self._fixed if tz is None else self._fixed.astimezone(tz)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(datetime, name)
+
+
 def phone_sleep(
     server: FakeSyncServer,
     object_id: str = SLEEP_ID,
@@ -121,13 +135,18 @@ def sleeps(engine: SyncEngine) -> list[Sleep]:
 
 
 async def test_start_sleep_posts_an_add_with_duration_zero_shaped_like_the_captured_start(
-    client: BabyTrackerClient, fake_server: FakeSyncServer
+    client: BabyTrackerClient, fake_server: FakeSyncServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     seed(fake_server)
     engine = await synced_engine(client)
+    captured_start = at("2026-10-26 16:57:39 +0000")
+    # Pin the clock just after the captured start, so the 24-hour guard doesn't age this test out.
+    monkeypatch.setattr(
+        pybabytracker_builders, "datetime", _FixedNow(captured_start + timedelta(seconds=5))
+    )
 
     sleep = await engine.start_sleep(
-        client, BABY_ID, start=at("2026-10-26 16:57:39 +0000"), timezone_offset=UTC_MINUS_5
+        client, BABY_ID, start=captured_start, timezone_offset=UTC_MINUS_5
     )
 
     entry = nth_post(fake_server, 0)
