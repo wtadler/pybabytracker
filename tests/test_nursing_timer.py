@@ -258,3 +258,27 @@ def test_a_saved_pump_timer_that_cannot_be_read_is_refused(saved: dict[str, str]
 def test_a_saved_pump_timer_missing_a_field_is_refused() -> None:
     with pytest.raises(KeyError):
         PumpTimer.from_dict({"object_id": OBJECT_ID})
+
+
+@pytest.mark.parametrize(
+    ("saved", "expected"),
+    [
+        ("2026-10-26T14:00:00Z", START),
+        ("2026-10-26T14:00:00+00:00", START),
+        ("2026-10-26T10:00:00-04:00", START),
+        ("2026-10-26T19:30:00+05:30", START),
+        ("2026-10-26T14:00:00.250000+00:00", START + timedelta(milliseconds=250)),
+    ],
+)
+def test_a_saved_time_with_a_z_or_any_offset_reads_as_the_same_moment(
+    saved: str, expected: datetime
+) -> None:
+    timer = NursingTimer.from_dict({**nursing().to_dict(), "started": saved, "side_started": saved})
+    assert timer.started == expected
+    assert timer.side_started == expected
+    assert PumpTimer.from_dict({"object_id": OBJECT_ID, "started": saved}).started == expected
+
+
+def test_a_saved_time_keeps_its_offset_when_saved_again() -> None:
+    saved = {**nursing().to_dict(), "started": "2026-10-26T10:00:00-04:00"}
+    assert NursingTimer.from_dict(saved).to_dict()["started"] == "2026-10-26T10:00:00-04:00"
