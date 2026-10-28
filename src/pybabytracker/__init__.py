@@ -4,18 +4,25 @@ from ._version import __version__
 from .client import BabyTrackerClient, Device, RawTransaction
 from .engine import ApplyResult, SyncEngine, SyncResult, SyncSource
 from .exceptions import (
+    AmountTooSmallError,
     AuthenticationError,
     BabyTrackerConnectionError,
     BabyTrackerError,
+    EndBeforeStartError,
+    InvalidAmountError,
+    MinutesTooLongError,
     NoResponseError,
     NotOwnRecordError,
     NotSyncedError,
     ObjectIdInUseError,
     ProtocolError,
     RecordNotFoundError,
+    SleepStartOutOfRangeError,
+    SleepTooLongError,
     TimerNotRunningError,
     TransactionDecodeError,
     UnknownBabyError,
+    ValidationError,
     WriteError,
     WriteOutcomeUnknownError,
     WrongRecordTypeError,
@@ -61,10 +68,23 @@ from .models import (
     decode_transaction,
     encode_transaction,
 )
+from .timers import NursingTimer, PumpTimer
 from .times import format_time, from_unix, parse_time, standard_offset_seconds, to_unix
+from .totals import DayTotals, day_totals
 
 __all__ = [
     "Allergen",
+    "AmountTooSmallError",
+    "DayTotals",
+    "EndBeforeStartError",
+    "InvalidAmountError",
+    "MinutesTooLongError",
+    "NursingTimer",
+    "PumpTimer",
+    "SleepStartOutOfRangeError",
+    "SleepTooLongError",
+    "ValidationError",
+    "day_totals",
     "ApplyResult",
     "AuthenticationError",
     "Baby",
