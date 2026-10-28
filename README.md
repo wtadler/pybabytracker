@@ -142,6 +142,27 @@ nursing session is written once, finished, with `add_nursing`.
 The service lists a device only after its first post; on the test account, the dev device
 appeared with `LastSyncID` 1 right after its first add, with no confirmation step.
 
+### Nursing and pump timers
+
+Because a nursing timer isn't synced while it runs, a client that offers one keeps its own.
+`NursingTimer` is that state as an immutable value: `NursingTimer.start(object_id, "left", now)`,
+`timer.switched("right", now)`, and `timer.minutes(now)` for the whole minutes per side to pass to
+`add_nursing`. Each side rounds half up; a session under 30 seconds is 1 minute on the side it
+ended on; a side past 240 minutes is written as 240 and logged. `to_dict()` and
+`NursingTimer.from_dict()` give a form to save between runs, and `PumpTimer` does the same for a
+pump (one length for both sides, never under 1 minute).
+
+### Day totals and write validation
+
+`day_totals(records, baby_id, start, end)` counts a baby's diapers (by kind), feeds, and bottle
+volume in milliliters from `start` up to `end`. The caller passes the bounds, so a local calendar
+day, including a 23- or 25-hour day at a clock change, is local midnight to the next local
+midnight. `pybabytracker.validation` has the checks behind a bad request (`check_amount`,
+`check_pump_amounts`, `check_minutes`, `check_sleep_range`, `check_end_after_start`,
+`check_sleep_start`). Each raises a `ValidationError` subclass (`InvalidAmountError`,
+`AmountTooSmallError`, `MinutesTooLongError`, `EndBeforeStartError`, `SleepTooLongError`,
+`SleepStartOutOfRangeError`) that carries what was wrong, so a caller can pick its own message.
+
 ## Merge rules
 
 Records are keyed by `objectID`. Each stored record carries a version made of the record's
