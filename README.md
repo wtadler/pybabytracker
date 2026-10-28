@@ -1,7 +1,13 @@
+<p align="center">
+  <img src="https://github.com/wtadler/pybabytracker/raw/main/docs/icon.png" alt="Baby Tracker icon" width="128">
+</p>
+
 # pybabytracker
 
-Async Python client for the Nighp Baby Tracker sync service, built for a Home Assistant
-integration. It is unofficial and identifies itself honestly (`pybabytracker/<version>`).
+Async Python client for the sync service of
+[Baby Tracker](https://apps.apple.com/us/app/baby-tracker-newborn-log/id779656557), the app by
+[Nighp](https://nighp.com), built for a Home Assistant integration. It is unofficial and
+identifies itself honestly (`pybabytracker/<version>`).
 
 ## Use
 
