@@ -23,6 +23,7 @@ from .models import (
     Pumped,
     Record,
     Volume,
+    numeric_code,
 )
 
 MILLILITERS_PER_FLUID_OUNCE = 29.5735295625
@@ -69,9 +70,10 @@ def day_totals(
             continue
         if isinstance(record, Diaper):
             diapers += 1
-            wet += record.status == DIAPER_WET
-            dirty += record.status == DIAPER_DIRTY
-            mixed += record.status == DIAPER_MIXED
+            status = numeric_code(record.status)
+            wet += status == DIAPER_WET
+            dirty += status == DIAPER_DIRTY
+            mixed += status == DIAPER_MIXED
         elif isinstance(record, Nursing | Formula | Pumped):
             feeds += 1
             if not isinstance(record, Nursing):

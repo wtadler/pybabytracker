@@ -21,7 +21,6 @@ from pybabytracker import (
     OP_ADD,
     OP_DELETE,
     SIDE_LEFT,
-    SIDE_RIGHT,
     BabyTrackerClient,
     Pump,
     RawTransaction,
@@ -358,7 +357,7 @@ async def test_add_pump_matches_the_total_only_fixture_apart_from_what_a_write_f
         amount=Volume(4, "oz"),
         left_minutes=5,
         right_minutes=7,
-        finish_side=SIDE_RIGHT,
+        finish_side=SIDE_LEFT,  # the fixture's finishSide, 1
         time=at(TOTAL_ONLY["payload"]["time"]),
         timezone_offset=-18000,
     )

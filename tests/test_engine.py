@@ -224,29 +224,29 @@ def test_an_unknown_record_type_is_kept_raw_with_a_debug_line(
 
 
 def test_an_unknown_record_type_never_logs_a_warning(caplog: pytest.LogCaptureFixture) -> None:
-    # The app has types the library doesn't model yet, like medications. A first sync loads
+    # The app has types the library doesn't model yet, like supplements. A first sync loads
     # every one of them, so a warning per record would flood the log of a working setup.
     engine = SyncEngine()
-    payload = {"BCObjectType": "Medication", "objectID": rid(1)}
+    payload = {"BCObjectType": "Supplement", "objectID": rid(1)}
     with caplog.at_level(logging.DEBUG, logger="pybabytracker"):
         engine.apply(PHONE, [tx(1, OP_ADD, payload)])
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
-    assert [r.levelno for r in caplog.records if "Medication" in r.getMessage()] == [logging.DEBUG]
+    assert [r.levelno for r in caplog.records if "Supplement" in r.getMessage()] == [logging.DEBUG]
 
 
 def test_each_unknown_record_type_is_logged_once(caplog: pytest.LogCaptureFixture) -> None:
     engine = SyncEngine()
-    medications = [
-        tx(n, OP_ADD, {"BCObjectType": "Medication", "objectID": rid(n)}) for n in range(1, 6)
+    supplements = [
+        tx(n, OP_ADD, {"BCObjectType": "Supplement", "objectID": rid(n)}) for n in range(1, 6)
     ]
     vaccines = [
         tx(n, OP_ADD, {"BCObjectType": "VaccineSelection", "objectID": rid(n)}) for n in range(6, 9)
     ]
     with caplog.at_level(logging.DEBUG, logger="pybabytracker"):
-        engine.apply(PHONE, [*medications, *vaccines])
-        engine.apply(TABLET, [tx(1, OP_ADD, {"BCObjectType": "Medication", "objectID": rid(20)})])
+        engine.apply(PHONE, [*supplements, *vaccines])
+        engine.apply(TABLET, [tx(1, OP_ADD, {"BCObjectType": "Supplement", "objectID": rid(20)})])
     messages = [r.getMessage() for r in caplog.records]
-    assert len([m for m in messages if "Medication" in m]) == 1
+    assert len([m for m in messages if "Supplement" in m]) == 1
     assert len([m for m in messages if "VaccineSelection" in m]) == 1
     # Every record is still kept.
     assert all(isinstance(engine.records[rid(n)], UnknownRecord) for n in (*range(1, 9), 20))

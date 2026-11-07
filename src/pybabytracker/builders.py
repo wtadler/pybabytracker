@@ -129,10 +129,19 @@ def _minutes(value: object, name: str) -> int:
 def _side(finish_side: int | None, left_used: bool, right_used: bool) -> int:
     """The side finished on: as given, else the last side used (right when both were)."""
     if finish_side is not None:
-        if finish_side not in (SIDE_LEFT, SIDE_RIGHT):
+        if isinstance(finish_side, bool) or finish_side not in (SIDE_LEFT, SIDE_RIGHT):
             raise ValueError(f"finish_side must be SIDE_LEFT or SIDE_RIGHT, not {finish_side!r}")
         return finish_side
     return SIDE_LEFT if left_used and not right_used else SIDE_RIGHT
+
+
+def _pump_sides(left_used: bool, right_used: bool) -> int:
+    """A pump's ``sides`` field: 1 for left only, 2 for right only, else 0 (both)."""
+    if left_used and not right_used:
+        return SIDE_LEFT
+    if right_used and not left_used:
+        return SIDE_RIGHT
+    return 0
 
 
 def _base(
@@ -408,8 +417,8 @@ def draft_pump(
             left_duration=left,
             right_duration=right,
             finish_side=side,
-            # Always 0 on every capture; its meaning isn't known.
-            sides=0,
+            # 0 is both sides, 1 left only, 2 right only (the app's PumpSides).
+            sides=_pump_sides(left_amount > 0 or left > 0, right_amount > 0 or right > 0),
         )
 
     return Draft(Pump, build)

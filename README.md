@@ -92,7 +92,7 @@ key.
   `timezone_offset=standard_offset_seconds(tz, time)`: New York is -18000 in July and January.
 - Nursing: `time` is the session's start, as in the capture. Give `start_time`, or `end_time`
   (start is end minus the total minutes), or neither (the session just ended). `finish_side` is
-  `SIDE_LEFT` or `SIDE_RIGHT`, defaulting to the last side used (right when both were). For a pump that default is a guess
+  `SIDE_LEFT` (1) or `SIDE_RIGHT` (2), as the app numbers them (`SIDE_NOT_SET` is 0 and isn't accepted), defaulting to the last side used (right when both were). For a pump that default is a guess
   (the one captured pump with both sides finished left), so pass `finish_side` yourself.
 - Sleep: `time` is `start`. `duration` is whole minutes: the length rounded half up (the capture
   stored about 30 seconds as 1), and at least 1, because a duration of 0 means a sleep in
@@ -105,7 +105,7 @@ key.
   a side left out is written as 0 in the other's unit, and both sides must use one unit.
   With no volume at all, minutes are required and the payload carries the durations and an
   `amount` of 0 in `default_unit` (default `oz`), as the app writes a timed pump with no volume.
-  `sides` is written as 0, as captured. Babies are never derived from pumps, and a pump that
+  `sides` is 0 for both sides, 1 for left only, and 2 for right only. Babies are never derived from pumps, and a pump that
   carries a `baby` still decodes (kept raw, not read). `engine.latest_pump()` is the newest pump
   on the account; `latest_records(baby_id)` never includes pumps.
 

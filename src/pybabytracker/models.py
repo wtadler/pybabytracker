@@ -1,5 +1,13 @@
 """Typed records for every activity type, and the base64 JSON transaction codec.
 
+Side numbers: ``finishSide`` on nursing and pump records is ``SIDE_NOT_SET`` (0), ``SIDE_LEFT``
+(1), or ``SIDE_RIGHT`` (2), as in the app. A pump's ``sides`` field is numbered differently: 0 is
+both sides, 1 left, and 2 right.
+
+Android sends some codes (diaper ``status``, nursing ``finishSide``) as strings of digits where
+iOS sends ints. Records keep the raw value so a round trip is exact; compare codes through
+``numeric_code``.
+
 A transaction payload is a JSON object whose keys are the columns of the matching
 ``EasyLog.db`` table in lowerCamelCase. Each model keeps the keys it doesn't know about in
 ``extra`` and remembers which known keys were present, so decoding then encoding a payload
@@ -34,8 +42,25 @@ _TIME = "time"
 _BABY = "baby"
 _VOLUME = "volume"
 
-SIDE_LEFT = 0
-SIDE_RIGHT = 1
+SIDE_NOT_SET = 0
+SIDE_LEFT = 1
+SIDE_RIGHT = 2
+
+
+def numeric_code(value: object) -> int | None:
+    """A code as an int: an int (not a bool) or a string of digits, else ``None``.
+
+    iOS sends codes as ints and Android as digit strings (``"1"``). A float, an empty or padded
+    string, a sign, or a bool is not a code.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isascii() and value.isdigit():
+        return int(value)
+    return None
+
 
 UNIT_OUNCES = "oz"
 UNIT_MILLILITERS = "ml"
@@ -53,8 +78,8 @@ class VolumeMeasure:
 
     The raw object is kept as is, so unknown keys and odd values survive a round trip.
     ``englishMeasure`` "true" means ounces and "false" means milliliters, both observed in captures
-    (2026-10-26; a metric write carries the number as entered). Any other value, or no key, is read
-    as milliliters.
+    (2026-10-26; a metric write carries the number as entered). Android sends a JSON boolean
+    instead, read the same way. Any other value, or no key, is read as milliliters.
     """
 
     def __init__(
@@ -86,7 +111,9 @@ class VolumeMeasure:
         number = _number(self.value)
         if number is None:
             return None
-        unit = UNIT_OUNCES if self.english_measure == "true" else UNIT_MILLILITERS
+        english = self.english_measure
+        is_ounces = english is True or english == "true"
+        unit = UNIT_OUNCES if is_ounces else UNIT_MILLILITERS
         return Volume(number, unit)
 
     def to_payload(self) -> dict[str, Any]:
@@ -278,10 +305,10 @@ class Baby(Record):
 class Diaper(Record):
     object_type: ClassVar[str] = "Diaper"
 
-    status: int | None = _opt("status")
+    status: int | str | None = _opt("status")
     pee_color: int | None = _opt("peeColor")
     poo_color: int | None = _opt("pooColor")
-    amount: int | None = _opt("amount")
+    amount: int | str | None = _opt("amount")
     texture: int | None = _opt("texture")
     flag: int | None = _opt("flag")
 
@@ -292,13 +319,26 @@ class Nursing(Record):
     object_type: ClassVar[str] = "Nursing"
 
     desc_id: str | None = _opt("descID")
-    finish_side: int | None = _opt("finishSide")
+    finish_side: int | str | None = _opt("finishSide")
     left_duration: int | None = _opt("leftDuration")
     right_duration: int | None = _opt("rightDuration")
     both_duration: int | None = _opt("bothDuration")
     is_detailed: str | None = _opt("isDetailed")
-    state: int | None = _opt("state")
-    pair_session_state: int | None = _opt("pairSessionState")
+    state: int | str | None = _opt("state")
+    pair_session_state: int | str | None = _opt("pairSessionState")
+
+
+@_register
+@dataclass(kw_only=True)
+class NursingSession(Nursing):
+    """Android's timed nursing record: a ``Nursing`` plus the timer's own fields. It is a
+    ``Nursing``, so it counts as a feed, and it re-encodes under its own type name."""
+
+    object_type: ClassVar[str] = "NursingSession"
+
+    detailed: str | None = _opt("detailed")
+    left_timestamps: list[Any] | None = _opt("leftTimestamps")
+    right_timestamps: list[Any] | None = _opt("rightTimestamps")
 
 
 @_register
@@ -352,7 +392,8 @@ class Pump(Record):
     object_type: ClassVar[str] = "Pump"
 
     baby: Baby | None = field(default=None, init=False, repr=False)
-    finish_side: int | None = _opt("finishSide")
+    finish_side: int | str | None = _opt("finishSide")
+    # 0 is both sides, 1 left, 2 right (not the numbering of finishSide).
     sides: int | None = _opt("sides")
     amount: VolumeMeasure | float | None = _vol("amount")
     is_english_scale: int | None = _opt("isEnglishScale")
@@ -415,6 +456,27 @@ class Medicine(Record):
 
     med_id: str | None = _opt("medID")
     amount: float | None = _opt("amount")
+
+
+@_register
+@dataclass(kw_only=True)
+class Medication(Record):
+    """A dose given. The medicine is embedded as ``medicationSelection`` (``objectID``, ``name``,
+    ``unit``, ``amountPerTime``, ``interval``, and a prescription flag spelled ``isPresciption``
+    on iOS and ``prescription`` on Android), kept as the raw object. Not the ``Medicine``
+    record, which points at a medicine by ``medID``."""
+
+    object_type: ClassVar[str] = "Medication"
+
+    amount: float | None = _opt("amount")
+    medication_selection: dict[str, Any] | None = _opt("medicationSelection")
+
+    @property
+    def medicine_name(self) -> str | None:
+        """The medicine's name, or ``None`` when the selection is missing or has none."""
+        selection = self.medication_selection
+        name = selection.get("name") if isinstance(selection, dict) else None
+        return name if isinstance(name, str) else None
 
 
 @_register

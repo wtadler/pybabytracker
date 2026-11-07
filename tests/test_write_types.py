@@ -184,6 +184,10 @@ async def test_each_new_types_payload_equals_the_captured_one_key_for_key(
     expected = captured(label)
     if name == "sleep":
         expected["duration"] = 1  # the capture's add is at timer start; its stop update has 1
+    if name in ("pump", "nursing"):
+        # The captured sessions finished on another side than the builder's default for the
+        # write helper's minutes (which a separate ticket revisits for both-sided sessions).
+        expected["finishSide"] = SIDE_LEFT if name == "pump" else SIDE_RIGHT
     assert comparable(payload) == expected
     assert set(payload) == set(captured_keys(label))  # including the write-filled keys
     assert nth_post(fake_server, 0)["OPCode"] == 0
@@ -300,6 +304,7 @@ async def test_a_metric_pump_equals_the_captured_pump_with_the_metric_flag(
     expected["amount"] = metric_shape(210)
     expected["leftAmount"] = metric_shape(60)
     expected["rightAmount"] = metric_shape(150)
+    expected["finishSide"] = SIDE_LEFT  # the builder's default for this pump
     payload = posted(fake_server)
     assert comparable(payload) == expected
     assert set(payload) == captured_keys("C3")
@@ -591,7 +596,7 @@ async def test_a_nursing_record_decodes_with_both_durations_and_the_side(
     record = await engine.add_nursing(client, BABY_ID, left_minutes=7, right_minutes=3)
 
     assert isinstance(record, Nursing)
-    assert (record.left_duration, record.right_duration, record.finish_side) == (7, 3, 1)
+    assert (record.left_duration, record.right_duration, record.finish_side) == (7, 3, SIDE_RIGHT)
     assert record.is_detailed == "true"
     assert record.state == 5
 
@@ -634,7 +639,7 @@ async def test_a_one_sided_pump_writes_zero_for_the_other_side_in_the_same_unit(
     assert payload["rightAmount"] == {**measure, "value": 0}
     assert payload["rightDuration"] == 0
     assert payload["finishSide"] == SIDE_LEFT
-    assert payload["sides"] == 0
+    assert payload["sides"] == 1  # left only
 
 
 async def test_a_pump_decodes_back_to_the_volumes_written(
@@ -795,7 +800,8 @@ BAD_CALLS: dict[str, tuple[str, dict[str, Any]]] = {
     ),
     "naive nursing start": ("add_nursing", {"left_minutes": 5, "start_time": NAIVE}),
     "naive nursing end": ("add_nursing", {"left_minutes": 5, "end_time": NAIVE}),
-    "nursing finish side 2": ("add_nursing", {"left_minutes": 5, "finish_side": 2}),
+    "nursing finish side 0": ("add_nursing", {"left_minutes": 5, "finish_side": 0}),
+    "nursing finish side 3": ("add_nursing", {"left_minutes": 5, "finish_side": 3}),
     "pump with no volume and no length": ("add_pump", {"left_minutes": 0}),
     "negative pump side": (
         "add_pump",
@@ -822,6 +828,7 @@ BAD_CALLS: dict[str, tuple[str, dict[str, Any]]] = {
         "add_sleep",
         {"start": NOW, "end": NOW + timedelta(hours=24, seconds=1)},
     ),
+    "pump finish side 0": ("add_pump", {"left_volume": Volume(2, "oz"), "finish_side": 0}),
     "pump finish side 3": ("add_pump", {"left_volume": Volume(2, "oz"), "finish_side": 3}),
 }
 
