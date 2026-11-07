@@ -135,7 +135,7 @@ async def write_nursing(
         BABY_ID,
         left_minutes=1,
         right_minutes=1,
-        finish_side=SIDE_RIGHT,
+        finish_side=SIDE_LEFT,  # capture C4 stored 1
         start_time=at("2026-10-26 16:55:52 +0000"),
         timezone_offset=UTC_MINUS_5,
         **extra,
@@ -184,10 +184,10 @@ async def test_each_new_types_payload_equals_the_captured_one_key_for_key(
     expected = captured(label)
     if name == "sleep":
         expected["duration"] = 1  # the capture's add is at timer start; its stop update has 1
-    if name in ("pump", "nursing"):
-        # The captured sessions finished on another side than the builder's default for the
-        # write helper's minutes (which a separate ticket revisits for both-sided sessions).
-        expected["finishSide"] = SIDE_LEFT if name == "pump" else SIDE_RIGHT
+    if name == "pump":
+        # Capture C3 stored finishSide 0 (not set), which the builder refuses (see #123); the
+        # helper writes the left side.
+        expected["finishSide"] = SIDE_LEFT
     assert comparable(payload) == expected
     assert set(payload) == set(captured_keys(label))  # including the write-filled keys
     assert nth_post(fake_server, 0)["OPCode"] == 0
@@ -304,7 +304,7 @@ async def test_a_metric_pump_equals_the_captured_pump_with_the_metric_flag(
     expected["amount"] = metric_shape(210)
     expected["leftAmount"] = metric_shape(60)
     expected["rightAmount"] = metric_shape(150)
-    expected["finishSide"] = SIDE_LEFT  # the builder's default for this pump
+    expected["finishSide"] = SIDE_LEFT  # capture C3 stored 0, which the builder refuses (#123)
     payload = posted(fake_server)
     assert comparable(payload) == expected
     assert set(payload) == captured_keys("C3")

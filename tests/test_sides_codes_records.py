@@ -191,6 +191,10 @@ def test_numeric_code(value: Any, expected: int | None) -> None:
     assert numeric_code(value) == expected
 
 
+def test_numeric_code_of_an_absurdly_long_digit_string_is_none() -> None:
+    assert numeric_code("9" * 5000) is None
+
+
 def test_numeric_code_does_not_turn_a_bool_into_an_int() -> None:
     assert numeric_code(True) is None
 
@@ -276,8 +280,8 @@ def medication_payload(prescription_key: str | None, **overrides: Any) -> dict[s
     }
     if prescription_key is not None:
         selection[prescription_key] = 0
-    overrides.setdefault("object_id", "MED-1")
-    payload = payload_for("Medicine", **overrides)
+    object_id = overrides.pop("object_id", "MED-1")
+    payload = payload_for("Medicine", object_id=object_id, **overrides)
     payload.pop("medID")
     return {
         **payload,
@@ -377,8 +381,21 @@ def test_a_plain_nursing_record_is_still_a_nursing() -> None:
 def test_the_new_types_describe_only_set_fields(type_name: str) -> None:
     payload = medication_payload("prescription") if type_name == "Medication" else session_payload()
     record: Record = decode_payload(payload)
-    assert "object_id" not in record.describe()
-    assert record.describe()
+    expected = (
+        {"amount", "medication_selection"}
+        if type_name == "Medication"
+        else {
+            "desc_id",
+            "finish_side",
+            "left_duration",
+            "right_duration",
+            "both_duration",
+            "detailed",
+            "left_timestamps",
+            "right_timestamps",
+        }
+    )
+    assert set(record.describe()) == expected
 
 
 async def test_a_nursing_session_can_be_written_and_deleted(

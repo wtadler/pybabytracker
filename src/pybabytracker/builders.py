@@ -135,13 +135,19 @@ def _side(finish_side: int | None, left_used: bool, right_used: bool) -> int:
     return SIDE_LEFT if left_used and not right_used else SIDE_RIGHT
 
 
+# A pump's ``sides`` field (the app's PumpSides), numbered apart from ``finishSide``.
+_PUMP_SIDES_BOTH = 0
+_PUMP_SIDES_LEFT = 1
+_PUMP_SIDES_RIGHT = 2
+
+
 def _pump_sides(left_used: bool, right_used: bool) -> int:
-    """A pump's ``sides`` field: 1 for left only, 2 for right only, else 0 (both)."""
+    """A pump's ``sides`` field: left only, right only, else both."""
     if left_used and not right_used:
-        return SIDE_LEFT
+        return _PUMP_SIDES_LEFT
     if right_used and not left_used:
-        return SIDE_RIGHT
-    return 0
+        return _PUMP_SIDES_RIGHT
+    return _PUMP_SIDES_BOTH
 
 
 def _base(

@@ -35,8 +35,14 @@ async with aiohttp.ClientSession() as session:
   the service was unreachable or answered with a server error. A 401 mid-session triggers one
   sign-in and a retry before it becomes an `AuthenticationError`.
 - Records are typed (`Diaper`, `Sleep`, `Nursing`, and so on). A record type the library
-  doesn't know stays raw as an `UnknownRecord` with a logged warning. Decoding then encoding any
+  doesn't know stays raw as an `UnknownRecord` (a debug line is logged once per type). Decoding then encoding any
   payload returns the same JSON, including keys the library doesn't model.
+- Android sends some codes (diaper `status` and `amount`, nursing `finishSide`, `state`, and
+  `pairSessionState`) as digit strings where iOS sends ints, and `englishMeasure` as a boolean.
+  Records keep the raw values; compare codes with `numeric_code()`, which returns an int for an
+  int or a digit string and `None` for anything else. `Medication` (a dose, with its medicine's
+  name as `medicine_name`) and `NursingSession` (Android's timed nursing, a `Nursing` subclass
+  that counts as a feed) are modeled.
 
 ## Writes
 
@@ -92,8 +98,8 @@ key.
   `timezone_offset=standard_offset_seconds(tz, time)`: New York is -18000 in July and January.
 - Nursing: `time` is the session's start, as in the capture. Give `start_time`, or `end_time`
   (start is end minus the total minutes), or neither (the session just ended). `finish_side` is
-  `SIDE_LEFT` (1) or `SIDE_RIGHT` (2), as the app numbers them (`SIDE_NOT_SET` is 0 and isn't accepted), defaulting to the last side used (right when both were). For a pump that default is a guess
-  (the one captured pump with both sides finished left), so pass `finish_side` yourself.
+  `SIDE_LEFT` (1) or `SIDE_RIGHT` (2), as the app numbers them (`SIDE_NOT_SET` is 0 and isn't accepted), defaulting to the last side used (right when both were). For a pump the app mostly writes 0 (not set) when both sides were used, which the library doesn't
+  accept yet (#123), so pass `finish_side` yourself.
 - Sleep: `time` is `start`. `duration` is whole minutes: the length rounded half up (the capture
   stored about 30 seconds as 1), and at least 1, because a duration of 0 means a sleep in
   progress. `end` must be after `start`, and a sleep can't be longer than 24 hours.

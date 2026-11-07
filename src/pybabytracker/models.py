@@ -58,7 +58,10 @@ def numeric_code(value: object) -> int | None:
     if isinstance(value, int):
         return value
     if isinstance(value, str) and value.isascii() and value.isdigit():
-        return int(value)
+        try:
+            return int(value)
+        except ValueError:  # more digits than Python will convert
+            return None
     return None
 
 
