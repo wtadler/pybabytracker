@@ -252,6 +252,7 @@ class SyncEngine:
         self._created: set[str] = set()
         self._add_numbers: dict[str, int] = {}  # object_id -> number of this device's add
         self._own_updates: set[str] = set()  # objects this device posted an update (an end) to
+        self._logged_unknown_types: set[str] = set()
         self._lock = asyncio.Lock()
 
     @property
@@ -755,9 +756,18 @@ class SyncEngine:
         except TransactionDecodeError as err:
             _LOGGER.warning("Skipping undecodable transaction (%s): %s", where, err)
             return False
-        if isinstance(record, UnknownRecord) and record.record_type not in RECORD_TYPES:
-            _LOGGER.warning(
-                "Unknown record type %r (%s); keeping the raw payload", record.record_type, where
+        if (
+            isinstance(record, UnknownRecord)
+            and record.record_type not in RECORD_TYPES
+            and record.record_type not in self._logged_unknown_types
+        ):
+            # The app has types the library doesn't model yet, and a first sync loads every
+            # record, so this is logged once per type and only for debugging.
+            self._logged_unknown_types.add(record.record_type)
+            _LOGGER.debug(
+                "Unknown record type %r (first seen at %s); keeping the raw payloads",
+                record.record_type,
+                where,
             )
         if device_uuid == self._device_uuid and transaction.op_code == OP_ADD:
             self._created.add(record.object_id)
