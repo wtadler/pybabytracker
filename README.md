@@ -35,7 +35,11 @@ async with aiohttp.ClientSession() as session:
   the service was unreachable or answered with a server error. A 401 mid-session triggers one
   sign-in and a retry before it becomes an `AuthenticationError`.
 - Records are typed (`Diaper`, `Sleep`, `Nursing`, and so on). A record type the library
-  doesn't know stays raw as an `UnknownRecord` with a logged warning. Decoding then encoding any
+  doesn't know stays raw as an `UnknownRecord` (a debug line is logged once per type).
+  `Medication` is a medicine dose with the medicine embedded, and `NursingSession`, the Android
+  app's timed nursing, is a `Nursing`. The Android app sends codes such as a diaper's `status` as
+  strings of digits and `englishMeasure` as a JSON boolean; `numeric_code()` reads either form,
+  and volumes read both. Decoding then encoding any
   payload returns the same JSON, including keys the library doesn't model.
 
 ## Writes
@@ -92,8 +96,10 @@ key.
   `timezone_offset=standard_offset_seconds(tz, time)`: New York is -18000 in July and January.
 - Nursing: `time` is the session's start, as in the capture. Give `start_time`, or `end_time`
   (start is end minus the total minutes), or neither (the session just ended). `finish_side` is
-  `SIDE_LEFT` or `SIDE_RIGHT`, defaulting to the last side used (right when both were). For a pump that default is a guess
-  (the one captured pump with both sides finished left), so pass `finish_side` yourself.
+  `SIDE_LEFT` (1), `SIDE_RIGHT` (2), or `SIDE_NONE` (0), the app's numbering, defaulting to the
+  last side used (right when both were). The app shows the field as the side a session started
+  on, and saves most pumps that used both sides with `SIDE_NONE`, so pass `finish_side` yourself
+  when you know it.
 - Sleep: `time` is `start`. `duration` is whole minutes: the length rounded half up (the capture
   stored about 30 seconds as 1), and at least 1, because a duration of 0 means a sleep in
   progress. `end` must be after `start`, and a sleep can't be longer than 24 hours.

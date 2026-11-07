@@ -811,6 +811,7 @@ BAD_CALLS: dict[str, tuple[str, dict[str, Any]]] = {
     "naive nursing end": ("add_nursing", {"left_minutes": 5, "end_time": NAIVE}),
     "nursing finish side -1": ("add_nursing", {"left_minutes": 5, "finish_side": -1}),
     "nursing finish side 3": ("add_nursing", {"left_minutes": 5, "finish_side": 3}),
+    "nursing finish side True": ("add_nursing", {"left_minutes": 5, "finish_side": True}),
     "pump with no volume and no length": ("add_pump", {"left_minutes": 0}),
     "negative pump side": (
         "add_pump",

@@ -90,7 +90,9 @@ class VolumeMeasure:
         number = _number(self.value)
         if number is None:
             return None
-        unit = UNIT_OUNCES if self.english_measure in ("true", True) else UNIT_MILLILITERS
+        # Not ``in ("true", True)``: 1 == True, so that would read the number 1 as ounces.
+        english = self.english_measure == "true" or self.english_measure is True
+        unit = UNIT_OUNCES if english else UNIT_MILLILITERS
         return Volume(number, unit)
 
     def to_payload(self) -> dict[str, Any]:
@@ -109,15 +111,19 @@ def numeric_code(value: Any) -> int | None:
     """A numeric code, such as a diaper's ``status`` or a ``finishSide``, as an int.
 
     iOS sends these as numbers and the Android app as strings of digits (``"1"``), so both are
-    read; anything else (a bool, a fraction, other text) is ``None``. The record keeps the raw
+    read; anything else (a bool, a fraction, other text, a string too long to convert) is
+    ``None``. Only ASCII digits count, which is all the apps send. The record keeps the raw
     value, so the round trip is unchanged.
     """
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
         return value
-    if isinstance(value, str) and value.isdecimal():
-        return int(value)
+    if isinstance(value, str) and value.isascii() and value.isdecimal():
+        try:
+            return int(value)
+        except ValueError:  # past Python's int-string limit
+            return None
     return None
 
 
