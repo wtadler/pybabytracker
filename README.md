@@ -95,7 +95,9 @@ key.
   in the app and known from sync. `milestone_choices(baby_id)` lists them and `find_milestone`
   resolves a name (ignoring case) or ID. An unknown one raises `UnknownMilestoneError`, an empty
   or non-text one `InvalidSelectionNameError` (a `ValueError`), and a name that matches two
-  entries `AmbiguousSelectionError` naming their IDs, so pass the ID; all before any request.
+  entries `AmbiguousSelectionError` naming their IDs, so pass the ID; all before any request. The three unknown-entry errors share the base
+  `UnknownSelectionError` (with `.what`), and a dose with no `amount` for a medicine that has no
+  usual dose raises `NoUsualDoseError`.
   A milestone added for one baby is left out for the others. Adding a new milestone to the pick
   list isn't supported yet. Vaccines work the same way: the app's 10 built-ins
   (`BUILT_IN_VACCINES`) plus synced ones, `vaccine_choices()`, `find_vaccine`, and
@@ -108,7 +110,7 @@ key.
 - How well this is checked: a built-in milestone ("Back home") and vaccine ("HepB") and a
   medicine dose were posted on iOS and read back unchanged, and the app showed each as the entry
   it is. The other built-in IDs, Android, and a custom milestone or vaccine are unverified. A
-  custom milestone or vaccine syncing as its own transaction (`MilestoneSelection`,
+  pick-list entry syncing as its own transaction (`MilestoneSelection`,
   `VaccineSelection`, `MedicationSelection`) is an expected shape, not yet seen in synced data.
   A medicine's `interval` is in minutes.
 - Volumes are `Volume(value, "oz")` or `Volume(value, "ml")`, written as a `VolumeMeasure` with
