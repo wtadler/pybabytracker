@@ -473,6 +473,12 @@ class Medicine(Record):
     amount: float | None = _opt("amount")
 
 
+def _selection_name(selection: object) -> str | None:
+    """The ``name`` of an embedded selection object, when it has a string one."""
+    name = selection.get("name") if isinstance(selection, dict) else None
+    return name if isinstance(name, str) else None
+
+
 @_register
 @dataclass(kw_only=True)
 class Medication(Record):
@@ -487,9 +493,7 @@ class Medication(Record):
     @property
     def medicine_name(self) -> str | None:
         """The embedded medicine's name, when it has one."""
-        selection = self.medication_selection
-        name = selection.get("name") if isinstance(selection, dict) else None
-        return name if isinstance(name, str) else None
+        return _selection_name(self.medication_selection)
 
 
 @_register
@@ -504,28 +508,58 @@ class Temperature(Record):
 @_register
 @dataclass(kw_only=True)
 class Vaccine(Record):
+    """A vaccine given. The apps sync the vaccine itself (``name``, ``forAge``, ``objectID``)
+    embedded as ``vaccineType``. ``vaccID`` and ``docVisitID`` are the local database's columns."""
+
     object_type: ClassVar[str] = "Vaccine"
 
+    vaccine_type: dict[str, Any] | None = _opt("vaccineType")
     vacc_id: str | None = _opt("vaccID")
     doc_visit_id: str | None = _opt("docVisitID")
+
+    @property
+    def vaccine_name(self) -> str | None:
+        """The embedded vaccine's name, when it has one."""
+        return _selection_name(self.vaccine_type)
 
 
 @_register
 @dataclass(kw_only=True)
 class Milestone(Record):
+    """A milestone reached. The apps sync the milestone itself (``name``, ``forAge``,
+    ``objectID``) embedded as ``milestoneType``. ``milestoneSelectionID`` is the local database's
+    column."""
+
     object_type: ClassVar[str] = "Milestone"
 
+    milestone_type: dict[str, Any] | None = _opt("milestoneType")
+    has_new_type: bool | str | None = _opt("hasNewType")
     milestone_selection_id: str | None = _opt("milestoneSelectionID")
+
+    @property
+    def milestone_name(self) -> str | None:
+        """The embedded milestone's name, when it has one."""
+        return _selection_name(self.milestone_type)
 
 
 @_register
 @dataclass(kw_only=True)
 class OtherActivity(Record):
+    """Any other activity (tummy time, a walk, a bath logged as an activity). The apps sync the
+    activity's kind (``name``, ``objectID``) embedded as ``desc``. ``descID`` and ``locationID``
+    are the local database's columns."""
+
     object_type: ClassVar[str] = "OtherActivity"
 
+    desc: dict[str, Any] | None = _opt("desc")
     desc_id: str | None = _opt("descID")
     location_id: str | None = _opt("locationID")
     duration: int | None = _opt("duration")
+
+    @property
+    def activity_name(self) -> str | None:
+        """The embedded activity kind's name, when it has one."""
+        return _selection_name(self.desc)
 
 
 @_register

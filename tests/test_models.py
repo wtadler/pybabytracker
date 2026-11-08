@@ -14,6 +14,7 @@ from pybabytracker import (
     Medication,
     Nursing,
     NursingSession,
+    OtherActivity,
     OtherFeed,
     Sleep,
     TransactionDecodeError,
@@ -249,6 +250,46 @@ def test_a_medication_without_an_embedded_medicine_has_no_name() -> None:
     record = decode_transaction(encode_b64(payload_for("Medication", medicationSelection=None)))
     assert isinstance(record, Medication)
     assert record.medicine_name is None
+
+
+@pytest.mark.parametrize(
+    ("type_name", "key", "name_of", "expected"),
+    [
+        ("OtherActivity", "desc", lambda r: r.activity_name, "Tummy time"),
+        ("Milestone", "milestoneType", lambda r: r.milestone_name, "Test Milestone"),
+        ("Vaccine", "vaccineType", lambda r: r.vaccine_name, "Test Vaccine"),
+    ],
+)
+def test_a_record_names_its_embedded_selection(
+    type_name: str, key: str, name_of: Any, expected: str
+) -> None:
+    record = decode_transaction(encode_b64(payload_for(type_name)))
+    assert name_of(record) == expected
+    assert record.to_payload()[key]["name"] == expected
+    assert key not in record.extra
+
+
+@pytest.mark.parametrize(
+    ("type_name", "key", "name_of"),
+    [
+        ("OtherActivity", "desc", lambda r: r.activity_name),
+        ("Milestone", "milestoneType", lambda r: r.milestone_name),
+        ("Vaccine", "vaccineType", lambda r: r.vaccine_name),
+    ],
+)
+@pytest.mark.parametrize("selection", [None, "Tummy time", {"name": 7}, {}])
+def test_a_record_without_a_named_selection_has_no_name(
+    type_name: str, key: str, name_of: Any, selection: object
+) -> None:
+    overrides: dict[str, Any] = {key: selection}
+    record = decode_transaction(encode_b64(payload_for(type_name, **overrides)))
+    assert name_of(record) is None
+
+
+def test_an_activity_keeps_its_duration_in_minutes() -> None:
+    record = decode_transaction(encode_b64(payload_for("OtherActivity")))
+    assert isinstance(record, OtherActivity)
+    assert record.duration == 15
 
 
 @pytest.mark.parametrize(
