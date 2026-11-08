@@ -53,6 +53,7 @@ from .models import (
     Volume,
     VolumeMeasure,
 )
+from .models import _number as _plain_number
 from .times import format_time
 
 MAX_MINUTES_PER_SIDE = 240
@@ -98,7 +99,7 @@ def _offset(moment: datetime, name: str) -> int:
 
 
 def _number(value: float) -> int | float:
-    """A volume as the app writes it: rounded to 2 decimals, an integer when whole."""
+    """A volume or dose as the app writes it: rounded to 2 decimals, an integer when whole."""
     rounded = round(float(value), 2)
     return int(rounded) if rounded.is_integer() else rounded
 
@@ -197,11 +198,22 @@ def draft_milestone(
         return Milestone(
             **_base(object_id, baby, timestamp, event, tz, text),
             milestone_type=dict(embedded),
-            # The Android app sends false: the milestone was picked from the list, not typed in.
+            # false: the milestone was picked from the list, not typed in. The value we expect
+            # the apps to send; not yet seen in synced data.
             has_new_type="false",
         )
 
     return Draft(Milestone, build)
+
+
+def _usual_dose(selection: Mapping[str, Any]) -> int | float | None:
+    """A medicine's usual dose (``amountPerTime``), or ``None`` unless it is a number that is
+    still above zero once written. Text, a bool, null, zero, and a non-finite number are not a
+    usual dose: the caller must give an amount rather than have one guessed."""
+    usual = _plain_number(selection.get("amountPerTime"))
+    if usual is None or not math.isfinite(usual) or _number(usual) <= 0:
+        return None
+    return _number(usual)
 
 
 def draft_medication(
@@ -212,11 +224,11 @@ def draft_medication(
     timezone_offset: int | None,
     note: str,
 ) -> Draft[Medication]:
-    """A dose of a medicine: ``amount`` in its unit (default its ``amountPerTime``), with the
-    medicine embedded as ``medicationSelection`` (app: ``Medication``)."""
+    """A dose of a medicine: ``amount`` in its unit (default its usual dose, ``amountPerTime``),
+    with the medicine embedded as ``medicationSelection``."""
     embedded = dict(selection)
     if amount is None:
-        amount = embedded.get("amountPerTime")
+        amount = _usual_dose(embedded)
         if amount is None:
             raise ValueError("this medicine has no usual dose, so give an amount")
     if isinstance(amount, bool) or not isinstance(amount, int | float) or not math.isfinite(amount):
@@ -245,7 +257,12 @@ def draft_vaccine(
     timezone_offset: int | None,
     note: str,
 ) -> Draft[Vaccine]:
-    """A vaccine given, embedding the vaccine as ``vaccineType`` (app: ``Vaccine``)."""
+    """A vaccine given, embedding the vaccine as ``vaccineType``.
+
+    The record carries the keys we expect the apps to send (expected shape, not yet seen in
+    synced data), and not ``vaccID`` or ``docVisitID``, which the model reads but the app keeps
+    in its local database.
+    """
     embedded = dict(selection)
     event, tz, text = _common(time, timezone_offset, note)
 

@@ -100,6 +100,7 @@ from .client import Device, RawTransaction
 from .exceptions import (
     AuthenticationError,
     BabyTrackerError,
+    InvalidSelectionNameError,
     NoResponseError,
     NotOwnRecordError,
     NotSyncedError,
@@ -144,8 +145,8 @@ from .models import (
 from .selections import (
     BUILT_IN_MILESTONES,
     BUILT_IN_VACCINES,
-    MilestoneChoice,
     SelectionChoice,
+    embedded_copy,
     find_choice,
     merged_choices,
 )
@@ -365,36 +366,48 @@ class SyncEngine:
 
         ``milestone`` is a name or ID from ``milestone_choices(baby_id)``: one the app ships
         with, or one added in the app and known from sync. A name matches ignoring case and
-        surrounding spaces. The record embeds that milestone as the app does. A milestone that
-        isn't known raises ``UnknownMilestoneError`` before any request; adding a new one to the
-        pick list isn't supported yet. The other arguments work as for ``add_diaper``.
+        surrounding spaces; a name that matches two entries raises ``AmbiguousSelectionError``,
+        and the ID must be passed instead. The record embeds that milestone as the app does. An
+        empty or non-text ``milestone`` raises ``InvalidSelectionNameError``, an unknown one
+        ``UnknownMilestoneError``, and no baby ``UnknownBabyError``, all before any request;
+        adding a new milestone to the pick list isn't supported yet. The other arguments work as
+        for ``add_diaper``.
         """
+        self._check_baby(target, baby_id)
         choice = self.find_milestone(milestone, baby_id)
         draft = draft_milestone(
             choice.selection, time=time, timezone_offset=timezone_offset, note=note
         )
         return await self._add(target, baby_id, draft, object_id)
 
-    def milestone_choices(self, baby_id: str | None = None) -> list[MilestoneChoice]:
+    def milestone_choices(self, baby_id: str | None = None) -> list[SelectionChoice]:
         """Every milestone a record for the baby can name.
 
         The app's built-in milestones come first, in its order, then the ones added in the app,
-        by name. A milestone added for one baby only is left out for the others; with no
-        ``baby_id``, all are listed. A synced or already-used copy of a milestone replaces the
-        built-in template, so a record embeds what the app has.
+        by name. A milestone added for one baby only is left out for the others, and so is a
+        custom one that only another baby's records embed; with no ``baby_id``, all are listed.
+        Of several copies of a milestone, a synced one wins, then the one in the newest record
+        (by its ``timestamp``, then its ``time``); a copy replaces the built-in template, so a
+        record embeds what the app has.
         """
         synced = [
-            record.to_payload()
-            for record in self._records.values()
-            if isinstance(record, MilestoneSelection)
-            and not (baby_id is not None and record.baby_id and record.baby_id != baby_id)
+            r.to_payload() for r in self._records.values() if isinstance(r, MilestoneSelection)
         ]
-        embedded = [r.milestone_type for r in self._records.values() if isinstance(r, Milestone)]
-        return merged_choices(BUILT_IN_MILESTONES, embedded, synced)
+        embedded = [
+            embedded_copy(r, r.milestone_type)
+            for r in self._records.values()
+            if isinstance(r, Milestone)
+        ]
+        return merged_choices(BUILT_IN_MILESTONES, embedded, synced, baby_id=baby_id)
 
-    def find_milestone(self, milestone: str, baby_id: str | None = None) -> MilestoneChoice:
-        """The milestone with that ID, or else that name; ``UnknownMilestoneError`` without one."""
-        found = find_choice(self.milestone_choices(baby_id), _wanted(milestone, "milestone"))
+    def find_milestone(self, milestone: str, baby_id: str | None = None) -> SelectionChoice:
+        """The milestone with that ID, or else that name.
+
+        Raises ``UnknownMilestoneError`` without one, ``AmbiguousSelectionError`` when a name
+        matches two, and ``InvalidSelectionNameError`` for an empty or non-text ``milestone``.
+        """
+        wanted = _wanted(milestone, "milestone")
+        found = find_choice(self.milestone_choices(baby_id), wanted, "milestone")
         if found is None:
             raise UnknownMilestoneError(
                 f"no milestone {milestone!r} is built in or known from sync"
@@ -416,10 +429,11 @@ class SyncEngine:
 
         ``vaccine`` is a name or ID from ``vaccine_choices()``: one of the app's built-in
         vaccines (``BUILT_IN_VACCINES``) or one added in the app and known from sync, matched as
-        for ``add_milestone``. The record embeds it as ``vaccineType``. An unknown one raises
-        ``UnknownVaccineError`` before any request. The other arguments work as for
-        ``add_diaper``.
+        for ``add_milestone``. The record embeds it as ``vaccineType``. Bad input raises the
+        errors ``add_milestone`` does (``UnknownVaccineError`` for an unknown vaccine) before any
+        request. The other arguments work as for ``add_diaper``.
         """
+        self._check_baby(target, baby_id)
         choice = self.find_vaccine(vaccine)
         draft = draft_vaccine(
             choice.selection, time=time, timezone_offset=timezone_offset, note=note
@@ -427,14 +441,22 @@ class SyncEngine:
         return await self._add(target, baby_id, draft, object_id)
 
     def vaccine_choices(self) -> list[SelectionChoice]:
-        """Every vaccine a record can name: the app's built-ins in its order, then added ones."""
+        """Every vaccine a record can name: the app's built-ins in its order, then added ones.
+
+        Copies are chosen as for ``milestone_choices``. Vaccines aren't narrowed by baby: a
+        ``VaccineSelection`` with a ``babyID`` hasn't been seen in synced data.
+        """
         synced = [r.to_payload() for r in self._records.values() if isinstance(r, VaccineSelection)]
-        embedded = [r.vaccine_type for r in self._records.values() if isinstance(r, Vaccine)]
+        embedded = [
+            embedded_copy(r, r.vaccine_type)
+            for r in self._records.values()
+            if isinstance(r, Vaccine)
+        ]
         return merged_choices(BUILT_IN_VACCINES, embedded, synced)
 
     def find_vaccine(self, vaccine: str) -> SelectionChoice:
-        """The vaccine with that ID, or else that name; ``UnknownVaccineError`` without one."""
-        found = find_choice(self.vaccine_choices(), _wanted(vaccine, "vaccine"))
+        """The vaccine with that ID, or else that name; errors as for ``find_milestone``."""
+        found = find_choice(self.vaccine_choices(), _wanted(vaccine, "vaccine"), "vaccine")
         if found is None:
             raise UnknownVaccineError(f"no vaccine {vaccine!r} is built in or known from sync")
         return found
@@ -454,12 +476,16 @@ class SyncEngine:
         """Post a dose of a medicine the baby was given, and apply it locally.
 
         ``medicine`` is a name or ID from ``medicine_choices()``: a medicine the account has used
-        or added in the app (the app ships none), matched as for ``add_milestone``. ``amount``
-        is in the medicine's own unit (its ``unit``, such as "ml"), and defaults to its usual
-        dose (``amountPerTime``). The record embeds the medicine as ``medicationSelection``. An
-        unknown medicine raises ``UnknownMedicineError``, and a missing or bad amount
-        ``ValueError``, before any request. The other arguments work as for ``add_diaper``.
+        or added in the app (the app ships none), matched as for ``add_milestone``: two medicines
+        of one name raise ``AmbiguousSelectionError``, so pass the ID. ``amount`` is in the
+        medicine's own unit (its ``unit``, such as "ml"), rounded to 2 decimals. It defaults to
+        the medicine's usual dose (``amountPerTime``) as the newest record that embeds it has it;
+        a medicine without a usual dose that is a number above zero needs an ``amount``. The
+        record embeds the medicine as ``medicationSelection``. An unknown medicine raises
+        ``UnknownMedicineError``, and a missing or bad amount ``ValueError``, before any request.
+        The other arguments work as for ``add_diaper``.
         """
+        self._check_baby(target, baby_id)
         choice = self.find_medicine(medicine)
         draft = draft_medication(
             choice.selection,
@@ -472,18 +498,21 @@ class SyncEngine:
 
     def medicine_choices(self) -> list[SelectionChoice]:
         """Every medicine a dose can name, by name: ones synced as ``MedicationSelection``
-        records, and ones doses already embed. The app ships no medicines."""
+        records, and ones doses already embed. The app ships no medicines. Copies are chosen as
+        for ``milestone_choices``, so a medicine's usual dose is the newest dose's."""
         synced = [
             r.to_payload() for r in self._records.values() if isinstance(r, MedicationSelection)
         ]
         embedded = [
-            r.medication_selection for r in self._records.values() if isinstance(r, Medication)
+            embedded_copy(r, r.medication_selection)
+            for r in self._records.values()
+            if isinstance(r, Medication)
         ]
         return merged_choices((), embedded, synced)
 
     def find_medicine(self, medicine: str) -> SelectionChoice:
-        """The medicine with that ID, or else that name; ``UnknownMedicineError`` without one."""
-        found = find_choice(self.medicine_choices(), _wanted(medicine, "medicine"))
+        """The medicine with that ID, or else that name; errors as for ``find_milestone``."""
+        found = find_choice(self.medicine_choices(), _wanted(medicine, "medicine"), "medicine")
         if found is None:
             raise UnknownMedicineError(f"no medicine {medicine!r} is known from sync")
         return found
@@ -757,6 +786,14 @@ class SyncEngine:
             raise ValueError("the client's device ID doesn't match the engine's device_uuid")
         if not self._synced:
             raise NotSyncedError("sync at least once before writing")
+
+    def _check_baby(self, target: WriteTarget, baby_id: object) -> None:
+        """Refuse a missing or unknown baby before a pick list is searched, so a milestone left
+        out for a baby that isn't there isn't reported as an unknown milestone. ``_add`` checks
+        again under the lock."""
+        self._check_can_write(target)
+        if not isinstance(baby_id, str) or baby_id not in self.babies():
+            raise UnknownBabyError(f"no baby {baby_id!r} is known from sync")
 
     async def _prepare(self, target: WriteTarget) -> int:
         """Settle any earlier failed post, catch up on this device's log, and choose the next
@@ -1090,9 +1127,10 @@ class SyncEngine:
 
 
 def _wanted(value: object, what: str) -> str:
-    """A pick-list name or ID as given, or ``ValueError`` when it's empty or not text."""
+    """A pick-list name or ID as given, or ``InvalidSelectionNameError`` when it's empty or not
+    text."""
     if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{what} must be a name or an ID")
+        raise InvalidSelectionNameError(what, value)
     return value
 
 

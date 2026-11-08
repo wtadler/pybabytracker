@@ -1,10 +1,21 @@
 """The app's pick lists: the milestones and vaccines it ships with, and how a record names one.
 
 A ``Milestone`` record embeds the milestone it marks (a ``MilestoneSelection``) as
-``milestoneType``. The built-in milestones aren't on the service: every app seeds them locally
-under fixed IDs starting ``EasyLogSeed`` (app: ``BTSQLiteOpenHelper`` seed rows,
-``DefaultValues.DefaultSeedPrefix``), so a record that names one must use the same ID for the app
-to match it. Milestones a user adds sync as ``MilestoneSelection`` transactions of their own.
+``milestoneType``, a ``Vaccine`` its vaccine as ``vaccineType``, and a ``Medication`` its medicine
+as ``medicationSelection``. The built-in milestones and vaccines aren't on the service: every app
+seeds them locally under fixed IDs starting ``EasyLogSeed``, so a record that names one must use
+the same ID for the app to match it.
+
+How well the built-in IDs are checked: one built-in milestone ("Back home") and one built-in
+vaccine ("HepB") were posted from this library and read back unchanged on iOS, and the app showed
+each as its own built-in entry, with no duplicate in the pick list. The other 19 milestone IDs
+and 9 vaccine IDs come from the same table of seeded rows but are unverified, and nothing has
+been checked on Android. A wrong ID would show up in the app as a different entry with a
+clashing name.
+
+Milestones and vaccines a user adds are expected to sync as ``MilestoneSelection`` and
+``VaccineSelection`` transactions of their own (expected shape, not yet seen in synced data).
+What has been seen is a medicine, which arrives only embedded in its doses.
 """
 
 from __future__ import annotations
@@ -12,6 +23,9 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
+
+from .exceptions import AmbiguousSelectionError
+from .models import Record, _selection_name
 
 # The timestamp the app gives its seeded selections.
 _SEED_TIMESTAMP = "1970-01-01 00:00:00 +0000"
@@ -68,9 +82,33 @@ class SelectionChoice:
     built_in: bool
     selection: Mapping[str, Any] = field(compare=False, repr=False)
 
+    @property
+    def unit(self) -> str | None:
+        """The entry's ``unit`` (a medicine's, such as "ml"), when it has a text one."""
+        unit = self.selection.get("unit")
+        return unit if isinstance(unit, str) else None
 
-# A milestone choice; the name is kept for the milestone API.
-MilestoneChoice = SelectionChoice
+
+@dataclass(frozen=True, slots=True)
+class EmbeddedCopy:
+    """A selection object a record embeds, with what ranks and places that record.
+
+    ``key`` orders records oldest to newest: the record's own ``timestamp`` first, then its
+    ``time``, then its object ID so that a full tie still has one answer in any arrival order.
+    """
+
+    selection: object
+    key: tuple[float, float, str]
+    baby_id: str | None
+
+
+def embedded_copy(record: Record, selection: object) -> EmbeddedCopy:
+    """The selection ``record`` embeds, as ``merged_choices`` takes it."""
+    oldest = float("-inf")
+    stamp = record.timestamp.timestamp() if record.timestamp is not None else oldest
+    event = record.time.timestamp() if record.time is not None else oldest
+    return EmbeddedCopy(selection, (stamp, event, record.object_id), record.baby_id)
+
 
 # The app's built-in vaccines, in its order: ID, short name, and full name. The app seeds every
 # one with forAge 0.
@@ -123,55 +161,97 @@ BUILT_IN_VACCINES: tuple[SelectionChoice, ...] = tuple(
 )
 
 
-def choice_from_selection(selection: object, *, built_in: bool = False) -> SelectionChoice | None:
+def choice_from_selection(selection: object) -> SelectionChoice | None:
     """A choice for a selection object, or ``None`` without a string ID and name."""
     if not isinstance(selection, Mapping):
         return None
-    object_id, name = selection.get("objectID"), selection.get("name")
-    if not isinstance(object_id, str) or not object_id or not isinstance(name, str):
+    object_id, name = selection.get("objectID"), _selection_name(selection)
+    if not isinstance(object_id, str) or not object_id or name is None:
         return None
-    return SelectionChoice(object_id, name, built_in, dict(selection))
+    return SelectionChoice(object_id, name, False, dict(selection))
+
+
+def _shown_to(selection: object, baby_id: str | None) -> bool:
+    """Whether an entry added for one baby (a non-empty ``babyID``) is for ``baby_id``."""
+    scope = selection.get("babyID") if isinstance(selection, Mapping) else None
+    return baby_id is None or not isinstance(scope, str) or not scope or scope == baby_id
 
 
 def merged_choices(
     built_ins: Iterable[SelectionChoice],
-    embedded: Iterable[object],
+    embedded: Iterable[EmbeddedCopy],
     synced: Iterable[object],
+    *,
+    baby_id: str | None = None,
 ) -> list[SelectionChoice]:
     """The entries a record can name: the built-ins, in the app's order, then the rest by name.
 
-    ``embedded`` are selection objects records already carry; ``synced`` are selections synced
-    as records of their own. A copy of a built-in replaces its template (keeping it first), so
-    a record embeds what the app has; a synced copy wins over an embedded one.
+    ``embedded`` are the selection objects records already carry; ``synced`` are selections
+    synced as records of their own. Where several copies of one entry exist, a synced copy wins,
+    then the copy in the newest record (see ``EmbeddedCopy``), never the one that arrived first.
+    A copy of a built-in replaces its template, keeping it in the app's place.
+
+    With a ``baby_id``, an entry added for another baby (a ``babyID`` on its selection) is left
+    out, and so is a custom entry only another baby's records embed: nothing says it is for every
+    baby. Built-ins are for every baby, whichever baby's record carries the copy.
     """
     order = {choice.object_id: i for i, choice in enumerate(built_ins)}
-    found: dict[str, SelectionChoice] = {}
-    for built_in in built_ins:
-        found[built_in.object_id] = built_in
-    for source, overrides_added in ((embedded, False), (synced, True)):
-        for selection in source:
-            copy = choice_from_selection(selection)
-            if copy is None:
-                continue
-            current = found.get(copy.object_id)
-            if current is not None and not current.built_in and not overrides_added:
-                continue
-            found[copy.object_id] = SelectionChoice(
-                copy.object_id, copy.name, copy.object_id in order, copy.selection
-            )
-    built = sorted((c for c in found.values() if c.built_in), key=lambda c: order[c.object_id])
-    added = sorted((c for c in found.values() if not c.built_in), key=lambda c: c.name.casefold())
+    found = {choice.object_id: choice for choice in built_ins}
+    shown: list[SelectionChoice] = []
+    hidden: set[str] = set()  # synced entries kept for another baby
+    for selection in synced:
+        copy = choice_from_selection(selection)
+        if copy is None:
+            continue
+        if _shown_to(selection, baby_id):
+            shown.append(copy)
+        else:
+            hidden.add(copy.object_id)
+    taken: set[str] = set()
+    for item in sorted(embedded, key=lambda e: e.key, reverse=True):
+        copy = choice_from_selection(item.selection)
+        if copy is None or copy.object_id in taken:
+            continue
+        if copy.object_id not in order and (
+            copy.object_id in hidden
+            or not _shown_to(item.selection, baby_id)
+            or (baby_id is not None and item.baby_id != baby_id)
+        ):
+            continue  # an older record of the right baby may still carry it
+        taken.add(copy.object_id)
+        found[copy.object_id] = copy
+    for copy in shown:
+        found[copy.object_id] = copy
+    choices = [
+        SelectionChoice(c.object_id, c.name, c.object_id in order, c.selection)
+        for c in found.values()
+    ]
+    built = sorted((c for c in choices if c.built_in), key=lambda c: order[c.object_id])
+    added = sorted(
+        (c for c in choices if not c.built_in), key=lambda c: (c.name.casefold(), c.object_id)
+    )
     return built + added
 
 
-def find_choice(choices: Iterable[SelectionChoice], wanted: str) -> SelectionChoice | None:
-    """The entry with that ID, or else that name, ignoring case and surrounding spaces."""
+def find_choice(
+    choices: Iterable[SelectionChoice], wanted: str, what: str
+) -> SelectionChoice | None:
+    """The entry with that ID, or else that name, ignoring case and surrounding spaces.
+
+    ``None`` when nothing matches. A name that matches more than one entry (two medicines of one
+    name, or a custom entry named like a built-in) raises ``AmbiguousSelectionError`` naming their
+    IDs, so the caller must pass the ID: it never picks one.
+    """
     listed = list(choices)
-    key = wanted.strip().casefold()
-    for choice in listed:
-        if choice.object_id.casefold() == key:
-            return choice
-    for choice in listed:
-        if choice.name.strip().casefold() == key:
-            return choice
+    text = wanted.strip()
+    key = text.casefold()
+    for matches in (
+        [c for c in listed if c.object_id == text],
+        [c for c in listed if c.object_id.casefold() == key],
+        [c for c in listed if c.name.strip().casefold() == key],
+    ):
+        if len(matches) > 1:
+            raise AmbiguousSelectionError(what, wanted, tuple(c.object_id for c in matches))
+        if matches:
+            return matches[0]
     return None

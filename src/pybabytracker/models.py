@@ -13,6 +13,7 @@ import binascii
 import copy
 import json
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from datetime import datetime
 from typing import Any, ClassVar, NamedTuple, Self
@@ -539,7 +540,7 @@ class Medicine(Record):
 
 def _selection_name(selection: object) -> str | None:
     """The ``name`` of an embedded selection object, when it has a string one."""
-    name = selection.get("name") if isinstance(selection, dict) else None
+    name = selection.get("name") if isinstance(selection, Mapping) else None
     return name if isinstance(name, str) else None
 
 
@@ -622,10 +623,11 @@ class Milestone(Record):
 @_register
 @dataclass(kw_only=True)
 class MilestoneSelection(Record):
-    """A milestone a user added to the app's pick list, synced as a transaction of its own (app:
-    ``MilestoneSelection``). ``babyID`` is set when it was added for one baby only; it stays in
-    ``extra``, where ``baby_id`` reads it. The built-in milestones never sync: see
-    ``BUILT_IN_MILESTONES``."""
+    """A milestone a user added to the app's pick list. It is expected to sync as a transaction
+    of its own (expected shape, not yet seen in synced data), as the milestone embedded in a
+    ``Milestone`` record has been seen to. ``babyID`` is expected when it was added for one baby
+    only; it stays in ``extra``, where ``baby_id`` reads it. The built-in milestones never sync:
+    see ``BUILT_IN_MILESTONES``."""
 
     object_type: ClassVar[str] = "MilestoneSelection"
 
@@ -638,9 +640,12 @@ class MilestoneSelection(Record):
 @_register
 @dataclass(kw_only=True)
 class MedicationSelection(Record):
-    """A medicine on the app's pick list, synced as a transaction of its own (app:
-    ``MedicationSelection``). The prescription flag is ``prescription`` on Android and
-    ``isPresciption`` on iOS; both stay as sent (the iOS one in ``extra``)."""
+    """A medicine on the app's pick list. It is expected to sync as a transaction of its own
+    (expected shape, not yet seen in synced data): a medicine has been seen only embedded in its
+    doses, as ``medicationSelection``. ``interval`` is in minutes, as iOS syncs it (the app takes
+    hours and syncs 555 as 33300); how Android types it is not yet seen. The prescription flag
+    is ``prescription`` on Android and ``isPresciption`` on iOS; both stay as sent (the iOS one
+    in ``extra``)."""
 
     object_type: ClassVar[str] = "MedicationSelection"
 
@@ -655,8 +660,9 @@ class MedicationSelection(Record):
 @_register
 @dataclass(kw_only=True)
 class VaccineSelection(Record):
-    """A vaccine a user added to the app's pick list, synced as a transaction of its own (app:
-    ``VaccineSelection``). The built-in vaccines never sync: see ``BUILT_IN_VACCINES``."""
+    """A vaccine a user added to the app's pick list. It is expected to sync as a transaction of
+    its own (expected shape, not yet seen in synced data). The built-in vaccines never sync: see
+    ``BUILT_IN_VACCINES``."""
 
     object_type: ClassVar[str] = "VaccineSelection"
 

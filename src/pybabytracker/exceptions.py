@@ -53,6 +53,22 @@ class UnknownVaccineError(WriteError):
     """No vaccine with that name or ID is built in or known from sync."""
 
 
+class AmbiguousSelectionError(WriteError):
+    """A name matches more than one entry of a pick list, so it can't say which is meant.
+
+    Pass the ``object_id`` of the one wanted instead. ``object_ids`` lists the matches.
+    """
+
+    def __init__(self, what: str, wanted: str, object_ids: tuple[str, ...]) -> None:
+        super().__init__(
+            f"{what} {wanted!r} matches {len(object_ids)} entries ({', '.join(object_ids)}): "
+            "pass the ID of the one you mean"
+        )
+        self.what = what
+        self.wanted = wanted
+        self.object_ids = object_ids
+
+
 class NotOwnRecordError(WriteError):
     """The record wasn't created by this device, so this device may not delete it."""
 
@@ -99,6 +115,15 @@ class AmountTooSmallError(ValidationError):
     def __init__(self, amount: float) -> None:
         super().__init__(f"an amount of {amount!r} rounds to zero at two decimals")
         self.amount = amount
+
+
+class InvalidSelectionNameError(ValidationError, ValueError):
+    """A pick-list name or ID is empty or isn't text."""
+
+    def __init__(self, what: str, value: object) -> None:
+        super().__init__(f"{what} must be a name or an ID, not {value!r}")
+        self.what = what
+        self.value = value
 
 
 class MinutesTooLongError(ValidationError):

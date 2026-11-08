@@ -23,7 +23,8 @@ EVENT_TIME = datetime(2026, 11, 7, 23, 28, 53, tzinfo=UTC)
 BACK_HOME = "EasyLogSeed3b250600-894f-11e2-9e96-0800200c9a66"
 FIRST_SMILE = "EasyLogSeed56cc56b0-894f-11e2-9e96-0800200c9a66"
 
-# The keys an Android phone sent for a milestone it logged (seen 2026-11-07), besides baby.
+# The keys an Android phone is reported to send for a milestone (no capture is kept here, so
+# this is the expected shape, not yet seen in synced data here), besides baby.
 ANDROID_MILESTONE_KEYS = {
     "BCObjectType",
     "hasNewType",
@@ -146,7 +147,8 @@ async def test_the_choices_list_built_ins_first_then_added_ones_by_name(
 async def test_a_used_built_in_keeps_the_copy_the_app_embedded(
     client: BabyTrackerClient, fake_server: FakeSyncServer
 ) -> None:
-    # As an Android phone sent it: no BCObjectType, and JSON booleans.
+    # The shape reported for an Android phone: no BCObjectType, and JSON booleans (expected
+    # shape, not yet seen in synced data here).
     android_copy = {
         "forAge": 0,
         "used": False,

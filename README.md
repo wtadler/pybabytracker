@@ -93,10 +93,24 @@ key.
 - A milestone names one from the app's pick list: one of the 20 it ships with
   (`BUILT_IN_MILESTONES`, under the app's own `EasyLogSeed` IDs, which never sync) or one added
   in the app and known from sync. `milestone_choices(baby_id)` lists them and `find_milestone`
-  resolves a name (ignoring case) or ID; an unknown one raises `UnknownMilestoneError` before any
-  request. Adding a new milestone to the pick list isn't supported yet. Vaccines work the same
-  way: the app's 10 built-ins (`BUILT_IN_VACCINES`) plus synced ones, `vaccine_choices()`,
-  `find_vaccine`, and `UnknownVaccineError`.
+  resolves a name (ignoring case) or ID. An unknown one raises `UnknownMilestoneError`, an empty
+  or non-text one `InvalidSelectionNameError` (a `ValueError`), and a name that matches two
+  entries `AmbiguousSelectionError` naming their IDs, so pass the ID; all before any request.
+  A milestone added for one baby is left out for the others. Adding a new milestone to the pick
+  list isn't supported yet. Vaccines work the same way: the app's 10 built-ins
+  (`BUILT_IN_VACCINES`) plus synced ones, `vaccine_choices()`, `find_vaccine`, and
+  `UnknownVaccineError`. A medicine has no built-ins: `medicine_choices()` lists the ones doses
+  already carry, and a `Medication` is logged against one by name or ID.
+- Where several records carry a copy of one entry, a synced copy wins, then the copy in the
+  newest record (by its `timestamp`, then its `time`), so a dose's default amount is the usual
+  dose of the newest dose. A medicine without a usual dose that is a number above zero needs an
+  `amount`. Doses are rounded to 2 decimals, like volumes, in the medicine's own unit.
+- How well this is checked: a built-in milestone ("Back home") and vaccine ("HepB") and a
+  medicine dose were posted on iOS and read back unchanged, and the app showed each as the entry
+  it is. The other built-in IDs, Android, and a custom milestone or vaccine are unverified. A
+  custom milestone or vaccine syncing as its own transaction (`MilestoneSelection`,
+  `VaccineSelection`, `MedicationSelection`) is an expected shape, not yet seen in synced data.
+  A medicine's `interval` is in minutes.
 - Volumes are `Volume(value, "oz")` or `Volume(value, "ml")`, written as a `VolumeMeasure` with
   `englishMeasure` `"true"` (ounces) or `"false"` (milliliters), rounded to 2 decimals (an integer
   when whole). The number is written as given, with no conversion, as the app does.

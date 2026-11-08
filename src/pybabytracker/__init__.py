@@ -4,12 +4,14 @@ from ._version import __version__
 from .client import BabyTrackerClient, Device, RawTransaction
 from .engine import ApplyResult, SyncEngine, SyncResult, SyncSource
 from .exceptions import (
+    AmbiguousSelectionError,
     AmountTooSmallError,
     AuthenticationError,
     BabyTrackerConnectionError,
     BabyTrackerError,
     EndBeforeStartError,
     InvalidAmountError,
+    InvalidSelectionNameError,
     MinutesTooLongError,
     NoResponseError,
     NotOwnRecordError,
@@ -85,26 +87,19 @@ from .models import (
     encode_transaction,
     numeric_code,
 )
-from .selections import BUILT_IN_MILESTONES, BUILT_IN_VACCINES, MilestoneChoice, SelectionChoice
+from .selections import BUILT_IN_MILESTONES, BUILT_IN_VACCINES, SelectionChoice
 from .timers import NursingTimer, PumpTimer
 from .times import format_time, from_unix, parse_time, standard_offset_seconds, to_unix
 from .totals import DayTotals, LastBreast, day_totals, last_breast
 
 __all__ = [
-    "BUILT_IN_MILESTONES",
-    "BUILT_IN_VACCINES",
-    "MedicationSelection",
-    "UnknownMedicineError",
-    "SelectionChoice",
-    "UnknownVaccineError",
-    "VaccineSelection",
-    "MilestoneChoice",
-    "MilestoneSelection",
-    "UnknownMilestoneError",
     "Allergen",
+    "AmbiguousSelectionError",
     "AmountTooSmallError",
     "ApplyResult",
     "AuthenticationError",
+    "BUILT_IN_MILESTONES",
+    "BUILT_IN_VACCINES",
     "Baby",
     "BabyTrackerClient",
     "BabyTrackerConnectionError",
@@ -122,13 +117,16 @@ __all__ = [
     "Growth",
     "HealthQuestion",
     "InvalidAmountError",
+    "InvalidSelectionNameError",
     "Journal",
     "Joy",
     "LastBreast",
     "Measurement",
     "Medication",
+    "MedicationSelection",
     "Medicine",
     "Milestone",
+    "MilestoneSelection",
     "MinutesTooLongError",
     "NoResponseError",
     "NotOwnRecordError",
@@ -153,6 +151,7 @@ __all__ = [
     "SIDE_LEFT",
     "SIDE_NONE",
     "SIDE_RIGHT",
+    "SelectionChoice",
     "Sick",
     "Sleep",
     "SleepStartOutOfRangeError",
@@ -172,8 +171,12 @@ __all__ = [
     "UNIT_OUNCES",
     "UNIT_POUNDS",
     "UnknownBabyError",
+    "UnknownMedicineError",
+    "UnknownMilestoneError",
     "UnknownRecord",
+    "UnknownVaccineError",
     "Vaccine",
+    "VaccineSelection",
     "ValidationError",
     "Volume",
     "VolumeMeasure",

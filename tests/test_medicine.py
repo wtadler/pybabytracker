@@ -19,8 +19,8 @@ from pybabytracker import (
 )
 
 EVENT_TIME = datetime(2026, 11, 7, 15, 0, tzinfo=UTC)
-# The keys a Medication had from both an iPhone and an Android phone (seen on a real account),
-# besides baby.
+# The keys a Medication is reported to have from both an iPhone and an Android phone (the
+# expected shape; no capture is kept here), besides baby.
 DOSE_KEYS = {
     "BCObjectType",
     "amount",
@@ -46,7 +46,8 @@ IOS_MEDICINE = {
     "amountPerTime": 3.75,
     "objectID": "M0000000-0000-4000-8000-000000000001",
 }
-# An Android phone's, as synced: no BCObjectType, JSON booleans, "prescription".
+# An Android phone's, as reported: no BCObjectType, JSON booleans, "prescription" (expected
+# shape, not yet seen in synced data here).
 ANDROID_MEDICINE = {
     "objectID": "M0000000-0000-4000-8000-000000000002",
     "name": "Test Probiotic",

@@ -20,7 +20,8 @@ from pybabytracker import (
 
 EVENT_TIME = datetime(2026, 11, 7, 15, 0, tzinfo=UTC)
 DTAP = "EasyLogSeed003effe4a50-8805-11e2-9e96-0800200c9a66"
-# The record keys a vaccine shares with the Android milestone capture, plus vaccineType.
+# The record keys a vaccine is expected to carry: those of a milestone, plus vaccineType
+# (expected shape, not yet seen in synced data).
 VACCINE_KEYS = {
     "BCObjectType",
     "vaccineType",
