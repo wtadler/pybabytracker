@@ -52,11 +52,11 @@ TYPE_FIELDS: dict[str, dict[str, Any]] = {
     },
     "Sleep": {"duration": 3600, "locationID": "loc-1", "descID": "desc-1"},
     "Growth": {
-        "weight": 7.5,
-        "length": 21.0,
-        "head": 14.0,
-        "isEnglishLengthScale": 1,
-        "isEnglishWeightScale": 1,
+        "weight": {"BCObjectType": "WeightMeasure", "englishMeasure": "true", "value": 7.5},
+        "length": {"BCObjectType": "LengthMeasure", "englishMeasure": "true", "value": 21.0},
+        "head": {"BCObjectType": "LengthMeasure", "englishMeasure": "true", "value": 14.0},
+        "deleted": "false",
+        "queryIndex": 0,
     },
     "Medicine": {"medID": "med-1", "amount": 2.5},
     "Medication": {

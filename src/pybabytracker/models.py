@@ -43,6 +43,10 @@ SIDE_RIGHT = 2
 
 UNIT_OUNCES = "oz"
 UNIT_MILLILITERS = "ml"
+UNIT_POUNDS = "lb"
+UNIT_KILOGRAMS = "kg"
+UNIT_INCHES = "in"
+UNIT_CENTIMETERS = "cm"
 
 
 class Volume(NamedTuple):
@@ -50,6 +54,36 @@ class Volume(NamedTuple):
 
     value: float
     unit: str
+
+
+class Measurement(NamedTuple):
+    """A weight or a length: a number and its unit (``"lb"``/``"kg"``, or ``"in"``/``"cm"``)."""
+
+    value: float
+    unit: str
+
+
+def _measurement(field: Any, is_english_scale: Any, units: tuple[str, str]) -> Measurement | None:
+    """Resolve a growth field: the synced measure ``{"BCObjectType", "englishMeasure", "value"}``,
+    or a plain number with the record's 0/1 scale column (the app's database shape).
+
+    ``units`` is the (US, metric) pair. ``englishMeasure`` "true" (or the Android app's ``true``)
+    means the US unit; anything else is metric. A plain number with no 0 or 1 scale has no unit,
+    so it gives ``None``, as does anything without a number.
+    """
+    english_unit, metric_unit = units
+    if isinstance(field, dict):
+        number = _number(field.get("value"))
+        if number is None:
+            return None
+        english_measure = field.get("englishMeasure")
+        # Not ``in ("true", True)``: 1 == True, so that would read the number 1 as the US unit.
+        english = english_measure == "true" or english_measure is True
+        return Measurement(number, english_unit if english else metric_unit)
+    number = _number(field)
+    if number is None or isinstance(is_english_scale, bool) or is_english_scale not in (0, 1):
+        return None
+    return Measurement(number, english_unit if is_english_scale == 1 else metric_unit)
 
 
 class VolumeMeasure:
@@ -455,13 +489,39 @@ class Sleep(Record):
 @_register
 @dataclass(kw_only=True)
 class Growth(Record):
+    """A growth measurement. The apps sync ``weight`` as a ``WeightMeasure`` and ``length`` and
+    ``head`` as ``LengthMeasure`` objects; the app's database stores plain numbers with
+    ``isEnglishWeightScale`` and ``isEnglishLengthScale``. The fields keep whichever arrived, and
+    the ``*_reading`` properties read both. A value is as sent: the apps store a 32-bit float."""
+
     object_type: ClassVar[str] = "Growth"
 
-    weight: float | None = _opt("weight")
-    length: float | None = _opt("length")
-    head: float | None = _opt("head")
+    weight: dict[str, Any] | float | None = _opt("weight")
+    length: dict[str, Any] | float | None = _opt("length")
+    head: dict[str, Any] | float | None = _opt("head")
     is_english_length_scale: int | None = _opt("isEnglishLengthScale")
     is_english_weight_scale: int | None = _opt("isEnglishWeightScale")
+
+    @property
+    def weight_reading(self) -> Measurement | None:
+        """The weight in pounds or kilograms, or ``None`` when there isn't one."""
+        return _measurement(
+            self.weight, self.is_english_weight_scale, (UNIT_POUNDS, UNIT_KILOGRAMS)
+        )
+
+    @property
+    def length_reading(self) -> Measurement | None:
+        """The length in inches or centimeters, or ``None`` when there isn't one."""
+        return _measurement(
+            self.length, self.is_english_length_scale, (UNIT_INCHES, UNIT_CENTIMETERS)
+        )
+
+    @property
+    def head_reading(self) -> Measurement | None:
+        """The head circumference in inches or centimeters, or ``None`` when there isn't one."""
+        return _measurement(
+            self.head, self.is_english_length_scale, (UNIT_INCHES, UNIT_CENTIMETERS)
+        )
 
 
 @_register

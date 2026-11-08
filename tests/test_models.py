@@ -11,6 +11,8 @@ from factories import ALL_TYPES, BABY_ID, baby_payload, encode_b64, payload_for
 from pybabytracker import (
     Baby,
     Diaper,
+    Growth,
+    Measurement,
     Medication,
     Nursing,
     NursingSession,
@@ -312,3 +314,72 @@ def test_numeric_codes_read_ints_and_androids_digit_strings(
     value: Any, expected: int | None
 ) -> None:
     assert numeric_code(value) == expected
+
+
+def test_a_growth_reads_its_synced_measures() -> None:
+    record = decode_transaction(encode_b64(payload_for("Growth")))
+    assert isinstance(record, Growth)
+    assert record.weight_reading == Measurement(7.5, "lb")
+    assert record.length_reading == Measurement(21.0, "in")
+    assert record.head_reading == Measurement(14.0, "in")
+
+
+@pytest.mark.parametrize(
+    ("english", "metric"), [("false", True), (False, True), (None, True), (1, True), ("1", True)]
+)
+def test_a_metric_growth_reads_kilograms_and_centimeters(english: Any, metric: bool) -> None:
+    def measure(kind: str, value: float) -> dict[str, Any]:
+        found: dict[str, Any] = {"BCObjectType": kind, "value": value}
+        if english is not None:
+            found["englishMeasure"] = english
+        return found
+
+    payload = payload_for(
+        "Growth",
+        weight=measure("WeightMeasure", 3.4),
+        length=measure("LengthMeasure", 53.0),
+        head=measure("LengthMeasure", 35.5),
+    )
+    record = decode_transaction(encode_b64(payload))
+    assert isinstance(record, Growth)
+    assert (record.weight_reading, record.length_reading, record.head_reading) == (
+        Measurement(3.4, "kg"),
+        Measurement(53.0, "cm"),
+        Measurement(35.5, "cm"),
+    )
+    assert _round_trip(payload) == payload
+
+
+def test_an_android_growth_with_boolean_units_reads_pounds() -> None:
+    payload = payload_for(
+        "Growth",
+        weight={"BCObjectType": "WeightMeasure", "englishMeasure": True, "value": 9.25},
+    )
+    record = decode_transaction(encode_b64(payload))
+    assert isinstance(record, Growth)
+    assert record.weight_reading == Measurement(9.25, "lb")
+
+
+@pytest.mark.parametrize(("scale", "unit"), [(1, "lb"), (0, "kg")])
+def test_a_growth_in_the_database_shape_reads_its_scale(scale: int, unit: str) -> None:
+    payload = payload_for("Growth", weight=7.5, isEnglishWeightScale=scale, length=None, head=None)
+    record = decode_transaction(encode_b64(payload))
+    assert isinstance(record, Growth)
+    assert record.weight_reading == Measurement(7.5, unit)
+    assert record.length_reading is None
+
+
+@pytest.mark.parametrize(
+    "weight",
+    [
+        None,
+        {"BCObjectType": "WeightMeasure", "englishMeasure": "true"},
+        {"BCObjectType": "WeightMeasure", "value": "7.5"},
+        {"BCObjectType": "WeightMeasure", "value": True},
+        7.5,  # a plain number without a 0 or 1 scale has no unit
+    ],
+)
+def test_a_growth_without_a_readable_weight_has_no_reading(weight: Any) -> None:
+    record = decode_transaction(encode_b64(payload_for("Growth", weight=weight)))
+    assert isinstance(record, Growth)
+    assert record.weight_reading is None
