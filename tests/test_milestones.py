@@ -2,28 +2,23 @@
 
 from __future__ import annotations
 
-import base64
-import json
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-from conftest import PROBE_UUID
 from factories import BABY_ID, BABY_TWO_ID, payload_for
 from fake_server import FakeSyncServer
+from selection_helpers import posted, rid, seed, synced
 
 from pybabytracker import (
     BUILT_IN_MILESTONES,
-    OP_ADD,
     BabyTrackerClient,
     Milestone,
     MilestoneSelection,
-    SyncEngine,
     UnknownMilestoneError,
     decode_payload,
 )
 
-PHONE = "AAAA1111-0000-4000-8000-00000000000A"
 EVENT_TIME = datetime(2026, 11, 7, 23, 28, 53, tzinfo=UTC)
 BACK_HOME = "EasyLogSeed3b250600-894f-11e2-9e96-0800200c9a66"
 FIRST_SMILE = "EasyLogSeed56cc56b0-894f-11e2-9e96-0800200c9a66"
@@ -45,10 +40,6 @@ ANDROID_MILESTONE_KEYS = {
 ANDROID_SELECTION_KEYS = {"forAge", "used", "desc", "name", "newFlage", "objectID", "timestamp"}
 
 
-def rid(n: int) -> str:
-    return f"AAAAAAAA-0000-4000-8000-{n:012d}"
-
-
 def selection(object_id: str, name: str, **overrides: Any) -> dict[str, Any]:
     """A MilestoneSelection a user added in the app, with invented values."""
     return {
@@ -62,25 +53,6 @@ def selection(object_id: str, name: str, **overrides: Any) -> dict[str, Any]:
         "timestamp": "2026-11-01 10:00:00 +0000",
         **overrides,
     }
-
-
-def seed(server: FakeSyncServer, *payloads: dict[str, Any]) -> None:
-    """Another phone has logged a diaper (so the baby is known) and anything else given."""
-    server.register_devices = False
-    server.add_device(PHONE)
-    server.add_transaction(PHONE, OP_ADD, payload_for("Diaper", rid(1)))
-    for payload in payloads:
-        server.add_transaction(PHONE, OP_ADD, payload)
-
-
-async def synced(client: BabyTrackerClient) -> SyncEngine:
-    engine = SyncEngine(device_uuid=PROBE_UUID)
-    await engine.sync(client)
-    return engine
-
-
-def posted(server: FakeSyncServer) -> list[dict[str, Any]]:
-    return [json.loads(base64.b64decode(e["Transaction"])) for e in server.posted(PROBE_UUID)]
 
 
 def test_the_built_in_milestones_are_the_apps_twenty() -> None:

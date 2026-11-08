@@ -2,28 +2,22 @@
 
 from __future__ import annotations
 
-import base64
-import json
 from datetime import UTC, datetime
-from typing import Any
 
 import pytest
-from conftest import PROBE_UUID
-from factories import BABY_ID, payload_for
+from factories import BABY_ID
 from fake_server import FakeSyncServer
+from selection_helpers import posted, seed, synced
 
 from pybabytracker import (
     BUILT_IN_VACCINES,
-    OP_ADD,
     BabyTrackerClient,
-    SyncEngine,
     UnknownVaccineError,
     Vaccine,
     VaccineSelection,
     decode_payload,
 )
 
-PHONE = "AAAA1111-0000-4000-8000-00000000000A"
 EVENT_TIME = datetime(2026, 11, 7, 15, 0, tzinfo=UTC)
 DTAP = "EasyLogSeed003effe4a50-8805-11e2-9e96-0800200c9a66"
 # The record keys a vaccine shares with the Android milestone capture, plus vaccineType.
@@ -39,28 +33,6 @@ VACCINE_KEYS = {
     "objectID",
     "timestamp",
 }
-
-
-def rid(n: int) -> str:
-    return f"AAAAAAAA-0000-4000-8000-{n:012d}"
-
-
-def seed(server: FakeSyncServer, *payloads: dict[str, Any]) -> None:
-    server.register_devices = False
-    server.add_device(PHONE)
-    server.add_transaction(PHONE, OP_ADD, payload_for("Diaper", rid(1)))
-    for payload in payloads:
-        server.add_transaction(PHONE, OP_ADD, payload)
-
-
-async def synced(client: BabyTrackerClient) -> SyncEngine:
-    engine = SyncEngine(device_uuid=PROBE_UUID)
-    await engine.sync(client)
-    return engine
-
-
-def posted(server: FakeSyncServer) -> list[dict[str, Any]]:
-    return [json.loads(base64.b64decode(e["Transaction"])) for e in server.posted(PROBE_UUID)]
 
 
 def test_the_built_in_vaccines_are_the_apps_ten() -> None:

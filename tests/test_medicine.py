@@ -2,27 +2,22 @@
 
 from __future__ import annotations
 
-import base64
-import json
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-from conftest import PROBE_UUID
 from factories import BABY_ID, payload_for
 from fake_server import FakeSyncServer
+from selection_helpers import posted, rid, seed, synced
 
 from pybabytracker import (
-    OP_ADD,
     BabyTrackerClient,
     Medication,
     MedicationSelection,
-    SyncEngine,
     UnknownMedicineError,
     decode_payload,
 )
 
-PHONE = "AAAA1111-0000-4000-8000-00000000000A"
 EVENT_TIME = datetime(2026, 11, 7, 15, 0, tzinfo=UTC)
 # The keys a Medication had from both an iPhone and an Android phone (seen on a real account),
 # besides baby.
@@ -64,30 +59,8 @@ ANDROID_MEDICINE = {
 }
 
 
-def rid(n: int) -> str:
-    return f"AAAAAAAA-0000-4000-8000-{n:012d}"
-
-
 def dose(n: int, medicine: dict[str, Any], amount: float) -> dict[str, Any]:
     return payload_for("Medication", rid(n), amount=amount, medicationSelection=medicine)
-
-
-def seed(server: FakeSyncServer, *payloads: dict[str, Any]) -> None:
-    server.register_devices = False
-    server.add_device(PHONE)
-    server.add_transaction(PHONE, OP_ADD, payload_for("Diaper", rid(1)))
-    for payload in payloads:
-        server.add_transaction(PHONE, OP_ADD, payload)
-
-
-async def synced(client: BabyTrackerClient) -> SyncEngine:
-    engine = SyncEngine(device_uuid=PROBE_UUID)
-    await engine.sync(client)
-    return engine
-
-
-def posted(server: FakeSyncServer) -> list[dict[str, Any]]:
-    return [json.loads(base64.b64decode(e["Transaction"])) for e in server.posted(PROBE_UUID)]
 
 
 def test_a_synced_medicine_selection_decodes() -> None:
