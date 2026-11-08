@@ -134,9 +134,10 @@ def last_breast(records: Iterable[Record], now: datetime) -> LastBreast | None:
         if isinstance(record, Nursing):
             if newest_nursing is None or time > newest_nursing[0]:
                 newest_nursing = (time, record)
-        elif isinstance(record, Pump) and not record.label:
-            if newest_pump is None or time > newest_pump[0]:
-                newest_pump = (time, record)
+        elif (isinstance(record, Pump) and not record.label) and (
+            newest_pump is None or time > newest_pump[0]
+        ):
+            newest_pump = (time, record)
     chosen: Nursing | Pump
     if newest_nursing is not None and (newest_pump is None or newest_nursing[0] > newest_pump[0]):
         (time, chosen), kind = newest_nursing, "nursing"
