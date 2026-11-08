@@ -74,7 +74,8 @@ class Picture(NamedTuple):
 
 
 def _is_deleted(value: object) -> bool:
-    """Whether a ``deleted`` flag is set: "true" or a real bool, or 1 (also as "1")."""
+    """Whether a ``deleted`` flag is set: "true" or a real bool. 1 and "1" count too, an
+    expected shape, not yet seen in synced data."""
     if isinstance(value, str):
         return value.strip().lower() in ("true", "1")
     return value == 1
