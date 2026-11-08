@@ -232,6 +232,34 @@ def test_a_solid_feed_with_a_plain_amount_and_no_food_still_reads() -> None:
     assert (record.food_name, record.quantity) == (None, 2.5)
 
 
+@pytest.mark.parametrize(
+    ("overrides", "food_name", "quantity"),
+    [
+        ({"feedType": {"BCObjectType": "OtherFeedSelection", "name": ""}}, "", 2.5),
+        ({"feedType": {"BCObjectType": "OtherFeedSelection", "name": None}}, None, 2.5),
+        ({"feedType": {"BCObjectType": "OtherFeedSelection", "name": 7}}, None, 2.5),
+        ({"feedType": {"BCObjectType": "OtherFeedSelection"}}, None, 2.5),
+        ({"feedType": "Test Food"}, None, 2.5),
+        ({"feedType": None}, None, 2.5),
+        ({"amount": {"BCObjectType": "VolumeMeasure", "value": "2"}}, None, None),
+        ({"amount": {"BCObjectType": "VolumeMeasure", "value": True}}, None, None),
+        ({"amount": 0}, None, 0.0),
+        ({"amount": {"BCObjectType": "VolumeMeasure", "value": "lots"}}, None, None),
+        ({"amount": {"BCObjectType": "VolumeMeasure", "value": None}}, None, None),
+        ({"amount": {"BCObjectType": "VolumeMeasure"}}, None, None),
+        ({"amount": None}, None, None),
+    ],
+)
+def test_a_solid_feed_with_odd_food_or_amount_reads_what_it_can(
+    overrides: dict[str, Any], food_name: str | None, quantity: float | None
+) -> None:
+    payload = payload_for("OtherFeed", **overrides)
+    record = decode_transaction(encode_b64(payload))
+    assert isinstance(record, OtherFeed)
+    assert (record.food_name, record.quantity) == (food_name, quantity)
+    assert _round_trip(payload) == payload
+
+
 def test_an_android_timer_session_is_a_nursing_record() -> None:
     # The Android app syncs a timed session as NursingSession; it is still a feed.
     record = decode_transaction(encode_b64(payload_for("NursingSession")))

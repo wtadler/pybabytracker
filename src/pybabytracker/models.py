@@ -404,7 +404,10 @@ class Pumped(Record):
 class OtherFeed(Record):
     """A solid food or other feed. The synced payload embeds the food as ``feedType`` (with its
     ``name``) and gives the amount as a ``VolumeMeasure`` whose number counts ``unit``, which is
-    free text such as "Oz", "Pieces", or "Tsp"."""
+    free text such as "Oz", "Pieces", or "Tsp".
+
+    Read the amount with ``quantity`` and ``unit``, not ``amount.volume``: that reads
+    ``englishMeasure`` as ounces or milliliters, which is wrong when ``unit`` is "Pieces"."""
 
     object_type: ClassVar[str] = "OtherFeed"
 
@@ -420,9 +423,7 @@ class OtherFeed(Record):
     @property
     def food_name(self) -> str | None:
         """The embedded food's name, when it has one."""
-        food = self.feed_type
-        name = food.get("name") if isinstance(food, dict) else None
-        return name if isinstance(name, str) else None
+        return _selection_name(self.feed_type)
 
     @property
     def quantity(self) -> float | None:
