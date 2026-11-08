@@ -47,6 +47,8 @@ UNIT_POUNDS = "lb"
 UNIT_KILOGRAMS = "kg"
 UNIT_INCHES = "in"
 UNIT_CENTIMETERS = "cm"
+UNIT_FAHRENHEIT = "F"
+UNIT_CELSIUS = "C"
 
 
 class Volume(NamedTuple):
@@ -57,7 +59,8 @@ class Volume(NamedTuple):
 
 
 class Measurement(NamedTuple):
-    """A weight or a length: a number and its unit (``"lb"``/``"kg"``, or ``"in"``/``"cm"``)."""
+    """A weight, a length, or a temperature: a number and its unit (``"lb"``/``"kg"``,
+    ``"in"``/``"cm"``, or ``"F"``/``"C"``)."""
 
     value: float
     unit: str
@@ -560,10 +563,23 @@ class Medication(Record):
 @_register
 @dataclass(kw_only=True)
 class Temperature(Record):
+    """A temperature. The apps sync it as ``temperature``, a ``TemperatureMeasure``; the app's
+    database stores ``temp`` with ``isEnglishScale``. ``reading`` reads either. The value is as
+    sent: the apps store a 32-bit float, so 100.4 can arrive as 100.4000015258789."""
+
     object_type: ClassVar[str] = "Temperature"
 
+    temperature: dict[str, Any] | None = _opt("temperature")
     temp: float | None = _opt("temp")
     is_english_scale: int | None = _opt("isEnglishScale")
+
+    @property
+    def reading(self) -> Measurement | None:
+        """The temperature in Fahrenheit or Celsius, or ``None`` when there isn't one."""
+        units = (UNIT_FAHRENHEIT, UNIT_CELSIUS)
+        if self.temperature is not None:
+            return _measurement(self.temperature, None, units)
+        return _measurement(self.temp, self.is_english_scale, units)
 
 
 @_register

@@ -19,6 +19,7 @@ from pybabytracker import (
     OtherActivity,
     OtherFeed,
     Sleep,
+    Temperature,
     TransactionDecodeError,
     UnknownRecord,
     decode_transaction,
@@ -260,6 +261,28 @@ def test_a_solid_feed_with_odd_food_or_amount_reads_what_it_can(
     assert _round_trip(payload) == payload
 
 
+@pytest.mark.parametrize(
+    ("english", "unit"),
+    [("true", "F"), (True, "F"), ("false", "C"), (False, "C"), (None, "C"), (1, "C"), ("1", "C")],
+)
+def test_a_temperature_reads_its_synced_measure(english: Any, unit: str) -> None:
+    measure: dict[str, Any] = {"BCObjectType": "TemperatureMeasure", "value": 37.5}
+    if english is not None:
+        measure["englishMeasure"] = english
+    payload = payload_for("Temperature", temperature=measure)
+    record = decode_transaction(encode_b64(payload))
+    assert isinstance(record, Temperature)
+    assert record.reading == Measurement(37.5, unit)
+    assert _round_trip(payload) == payload
+
+
+@pytest.mark.parametrize("measure", [None, "warm", {"value": "hot"}, {"englishMeasure": "true"}])
+def test_a_temperature_without_a_numeric_measure_has_no_reading(measure: Any) -> None:
+    record = decode_transaction(encode_b64(payload_for("Temperature", temperature=measure)))
+    assert isinstance(record, Temperature)
+    assert record.reading is None
+
+
 def test_an_android_timer_session_is_a_nursing_record() -> None:
     # The Android app syncs a timed session as NursingSession; it is still a feed.
     record = decode_transaction(encode_b64(payload_for("NursingSession")))
@@ -411,3 +434,12 @@ def test_a_growth_without_a_readable_weight_has_no_reading(weight: Any) -> None:
     record = decode_transaction(encode_b64(payload_for("Growth", weight=weight)))
     assert isinstance(record, Growth)
     assert record.weight_reading is None
+
+
+@pytest.mark.parametrize(("scale", "unit"), [(1, "F"), (0, "C")])
+def test_a_temperature_in_the_database_shape_reads_its_scale(scale: int, unit: str) -> None:
+    payload = payload_for("Temperature", temperature=None, temp=37.5, isEnglishScale=scale)
+    payload.pop("temperature")
+    record = decode_transaction(encode_b64(payload))
+    assert isinstance(record, Temperature)
+    assert record.reading == Measurement(37.5, unit)
