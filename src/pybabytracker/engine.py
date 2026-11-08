@@ -77,7 +77,7 @@ import asyncio
 import logging
 import time as _time
 import uuid
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
@@ -374,11 +374,15 @@ class SyncEngine:
         for ``add_diaper``.
         """
         self._check_baby(target, baby_id)
-        choice = self.find_milestone(milestone, baby_id)
-        draft = draft_milestone(
-            choice.selection, time=time, timezone_offset=timezone_offset, note=note
-        )
-        return await self._add(target, baby_id, draft, object_id)
+
+        def resolve() -> Draft[Milestone]:
+            choice = self.find_milestone(milestone, baby_id)
+            return draft_milestone(
+                choice.selection, time=time, timezone_offset=timezone_offset, note=note
+            )
+
+        resolve()  # a bad name or an unknown or ambiguous milestone fails before the lock
+        return await self._add(target, baby_id, resolve, object_id)
 
     def milestone_choices(self, baby_id: str | None = None) -> list[SelectionChoice]:
         """Every milestone a record for the baby can name.
@@ -434,11 +438,15 @@ class SyncEngine:
         request. The other arguments work as for ``add_diaper``.
         """
         self._check_baby(target, baby_id)
-        choice = self.find_vaccine(vaccine)
-        draft = draft_vaccine(
-            choice.selection, time=time, timezone_offset=timezone_offset, note=note
-        )
-        return await self._add(target, baby_id, draft, object_id)
+
+        def resolve() -> Draft[Vaccine]:
+            choice = self.find_vaccine(vaccine)
+            return draft_vaccine(
+                choice.selection, time=time, timezone_offset=timezone_offset, note=note
+            )
+
+        resolve()
+        return await self._add(target, baby_id, resolve, object_id)
 
     def vaccine_choices(self) -> list[SelectionChoice]:
         """Every vaccine a record can name: the app's built-ins in its order, then added ones.
@@ -486,15 +494,19 @@ class SyncEngine:
         The other arguments work as for ``add_diaper``.
         """
         self._check_baby(target, baby_id)
-        choice = self.find_medicine(medicine)
-        draft = draft_medication(
-            choice.selection,
-            amount,
-            time=time,
-            timezone_offset=timezone_offset,
-            note=note,
-        )
-        return await self._add(target, baby_id, draft, object_id)
+
+        def resolve() -> Draft[Medication]:
+            choice = self.find_medicine(medicine)
+            return draft_medication(
+                choice.selection,
+                amount,
+                time=time,
+                timezone_offset=timezone_offset,
+                note=note,
+            )
+
+        resolve()
+        return await self._add(target, baby_id, resolve, object_id)
 
     def medicine_choices(self) -> list[SelectionChoice]:
         """Every medicine a dose can name, by name: ones synced as ``MedicationSelection``
@@ -727,7 +739,11 @@ class SyncEngine:
         raise TimerNotRunningError(f"sleep {object_id} isn't running")
 
     async def _add[R: Record](
-        self, target: WriteTarget, baby_id: str | None, draft: Draft[R], object_id: str | None
+        self,
+        target: WriteTarget,
+        baby_id: str | None,
+        draft: Draft[R] | Callable[[], Draft[R]],
+        object_id: str | None,
     ) -> R:
         """The shared write path of every add: number, post, confirm, apply. ``baby_id`` is
         ``None`` for a record that belongs to the account, not a baby (a pump)."""
@@ -741,6 +757,10 @@ class SyncEngine:
                 if baby is None:
                     raise UnknownBabyError(f"no baby {baby_id} is known from sync")
             number = await self._prepare(target)
+            if not isinstance(draft, Draft):
+                # A pick-list entry and a default dose are resolved here, after the catch-up,
+                # so a write that waited behind a sync posts the current ones.
+                draft = draft()
             if object_id is not None:
                 if object_id in self._created:
                     existing = self._records.get(object_id)

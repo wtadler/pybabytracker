@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from .exceptions import NoUsualDoseError
 from .models import (
     DIAPER_DIRTY,
     DIAPER_MIXED,
@@ -52,6 +53,7 @@ from .models import (
     Vaccine,
     Volume,
     VolumeMeasure,
+    _selection_name,
 )
 from .models import _number as _plain_number
 from .times import format_time
@@ -230,7 +232,7 @@ def draft_medication(
     if amount is None:
         amount = _usual_dose(embedded)
         if amount is None:
-            raise ValueError("this medicine has no usual dose, so give an amount")
+            raise NoUsualDoseError(_selection_name(embedded))
     if isinstance(amount, bool) or not isinstance(amount, int | float) or not math.isfinite(amount):
         raise ValueError("a dose's amount must be a finite number")
     if amount <= 0:

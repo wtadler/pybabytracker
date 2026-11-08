@@ -11,6 +11,7 @@ from types import MappingProxyType
 from typing import Any
 
 import pytest
+from conftest import PROBE_UUID
 from factories import BABY_ID, BABY_TWO_ID, baby_payload, payload_for
 from fake_server import FakeSyncServer
 from selection_helpers import posted, rid, seed, synced
@@ -18,14 +19,17 @@ from selection_helpers import posted, rid, seed, synced
 from pybabytracker import (
     BUILT_IN_MILESTONES,
     BUILT_IN_VACCINES,
+    OP_ADD,
     AmbiguousSelectionError,
     BabyTrackerClient,
     InvalidSelectionNameError,
+    NoUsualDoseError,
     SelectionChoice,
     SyncEngine,
     UnknownBabyError,
     UnknownMedicineError,
     UnknownMilestoneError,
+    UnknownSelectionError,
     UnknownVaccineError,
     ValidationError,
     WriteError,
@@ -137,6 +141,13 @@ def embed(
     return payload_for(
         kind.record_type, rid(n), time=time, timestamp=timestamp, baby=baby, **fields
     )
+
+
+def other_process_logs(server: FakeSyncServer, payload: dict[str, Any]) -> None:
+    """Another process of this device adds a record to its log, after our sync."""
+    if PROBE_UUID not in server.devices:
+        server.add_device(PROBE_UUID)
+    server.add_transaction(PROBE_UUID, OP_ADD, payload)
 
 
 def only(engine: SyncEngine, kind: Kind, object_id: str) -> SelectionChoice:
@@ -709,3 +720,150 @@ def test_a_choice_reads_its_unit_when_it_has_a_text_one() -> None:
         assert choice is not None and choice.unit is None
     choice = choice_from_selection({"objectID": "X", "name": "Y"})
     assert choice is not None and choice.unit is None
+
+
+# --- R1: the per-baby rules in merged_choices -------------------------------------------------
+
+
+async def test_a_newer_copy_in_another_babys_record_does_not_hide_this_babys_older_copy(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    # The skipped copy must not claim the ID: baby one's older copy still has to be found.
+    mine = sel(MILESTONE, "CUSTOM-1", "Swim, baby one's name")
+    theirs = sel(MILESTONE, "CUSTOM-1", "Swim, baby two's name")
+    seed(
+        fake_server,
+        embed(MILESTONE, 2, mine, timestamp=OLD),
+        embed(MILESTONE, 3, theirs, timestamp=NEW, baby=BABY_TWO),
+    )
+    engine = await synced(client)
+
+    assert [c.name for c in engine.milestone_choices(BABY_ID) if c.object_id == "CUSTOM-1"] == [
+        "Swim, baby one's name"
+    ]
+    assert [c.name for c in engine.milestone_choices(BABY_TWO_ID) if c.object_id == "CUSTOM-1"] == [
+        "Swim, baby two's name"
+    ]
+    await engine.add_milestone(client, BABY_ID, "custom-1", time=EVENT_TIME)
+    [payload] = posted(fake_server)
+    assert payload["milestoneType"] == mine
+
+
+async def test_an_id_hidden_by_another_babys_synced_selection_stays_hidden(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    scoped = sel(MILESTONE, "CUSTOM-1", "First swim", babyID=BABY_TWO_ID)
+    unscoped_copy = sel(MILESTONE, "CUSTOM-1", "First swim")
+    seed(fake_server, scoped, embed(MILESTONE, 2, unscoped_copy))  # baby one's own record
+    engine = await synced(client)
+    before = len(fake_server.requests)
+
+    assert "CUSTOM-1" not in [c.object_id for c in engine.milestone_choices(BABY_ID)]
+    with pytest.raises(UnknownMilestoneError):
+        await engine.add_milestone(client, BABY_ID, "First swim", time=EVENT_TIME)
+    assert len(fake_server.requests) == before
+    assert posted(fake_server) == []
+    assert "CUSTOM-1" in [c.object_id for c in engine.milestone_choices(BABY_TWO_ID)]
+
+
+# --- the error families -----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("kind", KINDS, ids=IDS)
+async def test_every_unknown_entry_error_shares_one_base_that_says_which_list(
+    client: BabyTrackerClient, fake_server: FakeSyncServer, kind: Kind
+) -> None:
+    seed(fake_server)
+    engine = await synced(client)
+
+    with pytest.raises(UnknownSelectionError) as caught:
+        kind.find(engine, "nothing like it")
+    assert caught.value.what == kind.name
+    assert isinstance(caught.value, kind.unknown)
+    assert isinstance(caught.value, WriteError)
+
+
+def test_the_unknown_entry_errors_keep_their_names_as_subclasses() -> None:
+    for error in (UnknownMilestoneError, UnknownVaccineError, UnknownMedicineError):
+        assert issubclass(error, UnknownSelectionError)
+    assert UnknownMilestoneError("no such").what == "milestone"
+    assert str(UnknownVaccineError("no such")) == "no such"
+
+
+async def test_an_ambiguous_name_is_a_validation_error_with_what_it_matched(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    seed(
+        fake_server,
+        embed(MEDICINE, 2, sel(MEDICINE, "M-1", "Twin")),
+        embed(MEDICINE, 3, sel(MEDICINE, "M-2", "Twin")),
+    )
+    engine = await synced(client)
+
+    with pytest.raises(ValidationError) as caught:
+        engine.find_medicine("twin")
+    error = caught.value
+    assert isinstance(error, AmbiguousSelectionError) and isinstance(error, WriteError)
+    assert (error.what, error.wanted, set(error.object_ids)) == ("medicine", "twin", {"M-1", "M-2"})
+
+
+async def test_a_medicine_without_a_usual_dose_raises_the_typed_error(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    seed(fake_server, embed(MEDICINE, 2, sel(MEDICINE, "M-1", "Test Drops", amountPerTime=0)))
+    engine = await synced(client)
+
+    with pytest.raises(NoUsualDoseError) as caught:
+        await engine.add_medication(client, BABY_ID, "test drops", time=EVENT_TIME)
+    assert isinstance(caught.value, ValidationError) and isinstance(caught.value, ValueError)
+    assert caught.value.medicine == "Test Drops"
+    assert posted(fake_server) == []
+
+
+# --- R5: the entry and the default dose are resolved under the lock ---------------------------
+
+
+async def test_a_dose_posts_the_usual_amount_that_arrives_while_the_write_catches_up(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    old = sel(MEDICINE, "M-1", "Test Drops", amountPerTime=25)
+    new = sel(MEDICINE, "M-1", "Test Drops", amountPerTime=30)
+    seed(fake_server, embed(MEDICINE, 2, old, timestamp=OLD))
+    engine = await synced(client)
+    assert engine.find_medicine("test drops").selection["amountPerTime"] == 25
+    # Another process of this device logs a newer dose after our sync; the write's own
+    # catch-up on this device's log is what brings it in.
+    other_process_logs(fake_server, embed(MEDICINE, 3, new, timestamp=NEW))
+
+    record = await engine.add_medication(client, BABY_ID, "test drops", time=EVENT_TIME)
+
+    payload = posted(fake_server)[-1]
+    assert payload["objectID"] == record.object_id
+    assert payload["amount"] == 30
+    assert payload["medicationSelection"] == new
+
+
+async def test_a_milestone_posts_the_copy_that_arrives_while_the_write_catches_up(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    old = sel(MILESTONE, "CUSTOM-1", "First swim", desc=" swam")
+    new = sel(MILESTONE, "CUSTOM-1", "First swim", desc=" swam far")
+    seed(fake_server, embed(MILESTONE, 2, old, timestamp=OLD))
+    engine = await synced(client)
+    other_process_logs(fake_server, embed(MILESTONE, 3, new, timestamp=NEW))
+
+    await engine.add_milestone(client, BABY_ID, "first swim", time=EVENT_TIME)
+
+    assert posted(fake_server)[-1]["milestoneType"] == new
+
+
+async def test_a_name_that_becomes_ambiguous_during_the_catch_up_is_refused(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    seed(fake_server, embed(MEDICINE, 2, sel(MEDICINE, "M-1", "Test Drops")))
+    engine = await synced(client)
+    other_process_logs(fake_server, embed(MEDICINE, 3, sel(MEDICINE, "M-2", "Test Drops")))
+
+    with pytest.raises(AmbiguousSelectionError):
+        await engine.add_medication(client, BABY_ID, "test drops", time=EVENT_TIME)
+    assert len(posted(fake_server)) == 1  # only the other process's dose
