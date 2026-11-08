@@ -17,7 +17,9 @@ from pybabytracker import (
     Nursing,
     NursingSession,
     OtherActivity,
+    OtherFeed,
     Sleep,
+    Temperature,
     TransactionDecodeError,
     UnknownRecord,
     decode_transaction,
@@ -206,6 +208,81 @@ def test_a_known_type_with_an_unexpected_value_is_kept_raw(overrides: dict[str, 
     assert _round_trip(payload) == payload
 
 
+def test_a_solid_feed_reads_its_synced_food_and_quantity() -> None:
+    payload = payload_for(
+        "OtherFeed",
+        feedType={
+            "BCObjectType": "OtherFeedSelection",
+            "objectID": "food-1",
+            "name": "Test Food",
+            "bottle": "false",
+        },
+        desc={"BCObjectType": "FeedDescription", "objectID": "desc-1"},
+        amount={"BCObjectType": "VolumeMeasure", "englishMeasure": "true", "value": 2},
+        unit="Pieces",
+    )
+    record = decode_transaction(encode_b64(payload))
+    assert isinstance(record, OtherFeed)
+    assert (record.food_name, record.quantity, record.unit) == ("Test Food", 2.0, "Pieces")
+    assert _round_trip(payload) == payload
+
+
+def test_a_solid_feed_with_a_plain_amount_and_no_food_still_reads() -> None:
+    record = decode_transaction(encode_b64(payload_for("OtherFeed")))
+    assert isinstance(record, OtherFeed)
+    assert (record.food_name, record.quantity) == (None, 2.5)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "food_name", "quantity"),
+    [
+        ({"feedType": {"BCObjectType": "OtherFeedSelection", "name": ""}}, "", 2.5),
+        ({"feedType": {"BCObjectType": "OtherFeedSelection", "name": None}}, None, 2.5),
+        ({"feedType": {"BCObjectType": "OtherFeedSelection", "name": 7}}, None, 2.5),
+        ({"feedType": {"BCObjectType": "OtherFeedSelection"}}, None, 2.5),
+        ({"feedType": "Test Food"}, None, 2.5),
+        ({"feedType": None}, None, 2.5),
+        ({"amount": {"BCObjectType": "VolumeMeasure", "value": "2"}}, None, None),
+        ({"amount": {"BCObjectType": "VolumeMeasure", "value": True}}, None, None),
+        ({"amount": 0}, None, 0.0),
+        ({"amount": {"BCObjectType": "VolumeMeasure", "value": "lots"}}, None, None),
+        ({"amount": {"BCObjectType": "VolumeMeasure", "value": None}}, None, None),
+        ({"amount": {"BCObjectType": "VolumeMeasure"}}, None, None),
+        ({"amount": None}, None, None),
+    ],
+)
+def test_a_solid_feed_with_odd_food_or_amount_reads_what_it_can(
+    overrides: dict[str, Any], food_name: str | None, quantity: float | None
+) -> None:
+    payload = payload_for("OtherFeed", **overrides)
+    record = decode_transaction(encode_b64(payload))
+    assert isinstance(record, OtherFeed)
+    assert (record.food_name, record.quantity) == (food_name, quantity)
+    assert _round_trip(payload) == payload
+
+
+@pytest.mark.parametrize(
+    ("english", "unit"),
+    [("true", "F"), (True, "F"), ("false", "C"), (False, "C"), (None, "C"), (1, "C"), ("1", "C")],
+)
+def test_a_temperature_reads_its_synced_measure(english: Any, unit: str) -> None:
+    measure: dict[str, Any] = {"BCObjectType": "TemperatureMeasure", "value": 37.5}
+    if english is not None:
+        measure["englishMeasure"] = english
+    payload = payload_for("Temperature", temperature=measure)
+    record = decode_transaction(encode_b64(payload))
+    assert isinstance(record, Temperature)
+    assert record.reading == Measurement(37.5, unit)
+    assert _round_trip(payload) == payload
+
+
+@pytest.mark.parametrize("measure", [None, "warm", {"value": "hot"}, {"englishMeasure": "true"}])
+def test_a_temperature_without_a_numeric_measure_has_no_reading(measure: Any) -> None:
+    record = decode_transaction(encode_b64(payload_for("Temperature", temperature=measure)))
+    assert isinstance(record, Temperature)
+    assert record.reading is None
+
+
 def test_an_android_timer_session_is_a_nursing_record() -> None:
     # The Android app syncs a timed session as NursingSession; it is still a feed.
     record = decode_transaction(encode_b64(payload_for("NursingSession")))
@@ -357,3 +434,12 @@ def test_a_growth_without_a_readable_weight_has_no_reading(weight: Any) -> None:
     record = decode_transaction(encode_b64(payload_for("Growth", weight=weight)))
     assert isinstance(record, Growth)
     assert record.weight_reading is None
+
+
+@pytest.mark.parametrize(("scale", "unit"), [(1, "F"), (0, "C")])
+def test_a_temperature_in_the_database_shape_reads_its_scale(scale: int, unit: str) -> None:
+    payload = payload_for("Temperature", temperature=None, temp=37.5, isEnglishScale=scale)
+    payload.pop("temperature")
+    record = decode_transaction(encode_b64(payload))
+    assert isinstance(record, Temperature)
+    assert record.reading == Measurement(37.5, unit)

@@ -47,6 +47,8 @@ UNIT_POUNDS = "lb"
 UNIT_KILOGRAMS = "kg"
 UNIT_INCHES = "in"
 UNIT_CENTIMETERS = "cm"
+UNIT_FAHRENHEIT = "F"
+UNIT_CELSIUS = "C"
 
 
 class Volume(NamedTuple):
@@ -57,7 +59,8 @@ class Volume(NamedTuple):
 
 
 class Measurement(NamedTuple):
-    """A weight or a length: a number and its unit (``"lb"``/``"kg"``, or ``"in"``/``"cm"``)."""
+    """A weight, a length, or a temperature: a number and its unit (``"lb"``/``"kg"``,
+    ``"in"``/``"cm"``, or ``"F"``/``"C"``)."""
 
     value: float
     unit: str
@@ -402,13 +405,35 @@ class Pumped(Record):
 @_register
 @dataclass(kw_only=True)
 class OtherFeed(Record):
+    """A solid food or other feed. The synced payload embeds the food as ``feedType`` (with its
+    ``name``) and gives the amount as a ``VolumeMeasure`` whose number counts ``unit``, which is
+    free text such as "Oz", "Pieces", or "Tsp".
+
+    Read the amount with ``quantity`` and ``unit``, not ``amount.volume``: that reads
+    ``englishMeasure`` as ounces or milliliters, which is wrong when ``unit`` is "Pieces"."""
+
     object_type: ClassVar[str] = "OtherFeed"
 
+    feed_type: dict[str, Any] | None = _opt("feedType")
+    desc: dict[str, Any] | None = _opt("desc")
+    # The app's database columns, kept for payloads that carry them.
     desc_id: str | None = _opt("descID")
     type_id: str | None = _opt("typeID")
-    amount: float | None = _opt("amount")
+    amount: VolumeMeasure | float | None = _vol("amount")
     is_english_scale: int | None = _opt("isEnglishScale")
     unit: str | None = _opt("unit")
+
+    @property
+    def food_name(self) -> str | None:
+        """The embedded food's name, when it has one."""
+        return _selection_name(self.feed_type)
+
+    @property
+    def quantity(self) -> float | None:
+        """How many of ``unit`` were eaten, from the measure or a plain number."""
+        if isinstance(self.amount, VolumeMeasure):
+            return _number(self.amount.value)
+        return _number(self.amount)
 
 
 @_register
@@ -538,10 +563,23 @@ class Medication(Record):
 @_register
 @dataclass(kw_only=True)
 class Temperature(Record):
+    """A temperature. The apps sync it as ``temperature``, a ``TemperatureMeasure``; the app's
+    database stores ``temp`` with ``isEnglishScale``. ``reading`` reads either. The value is as
+    sent: the apps store a 32-bit float, so 100.4 can arrive as 100.4000015258789."""
+
     object_type: ClassVar[str] = "Temperature"
 
+    temperature: dict[str, Any] | None = _opt("temperature")
     temp: float | None = _opt("temp")
     is_english_scale: int | None = _opt("isEnglishScale")
+
+    @property
+    def reading(self) -> Measurement | None:
+        """The temperature in Fahrenheit or Celsius, or ``None`` when there isn't one."""
+        units = (UNIT_FAHRENHEIT, UNIT_CELSIUS)
+        if self.temperature is not None:
+            return _measurement(self.temperature, None, units)
+        return _measurement(self.temp, self.is_english_scale, units)
 
 
 @_register
