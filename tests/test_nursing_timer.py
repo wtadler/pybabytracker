@@ -190,6 +190,7 @@ def test_a_saved_timer_without_banked_seconds_reads_as_zero() -> None:
         {"start_side": "middle"},
         {"start_side": ""},
         {"start_side": 1},
+        {"start_side": None},
     ],
 )
 def test_a_saved_nursing_timer_that_cannot_be_read_is_refused(change: dict[str, object]) -> None:
@@ -328,3 +329,9 @@ def test_a_timer_saved_before_the_start_side_was_kept_guesses_it_from_its_time(
         "right_seconds": right_seconds,
     }
     assert NursingTimer.from_dict(saved).start_side == start_side
+
+
+def test_a_saved_timer_with_a_key_it_does_not_know_still_loads() -> None:
+    # A later version may save more; this one keeps what it knows.
+    timer = nursing(RIGHT)
+    assert NursingTimer.from_dict({**timer.to_dict(), "future_key": 1}) == timer
