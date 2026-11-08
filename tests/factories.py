@@ -52,11 +52,11 @@ TYPE_FIELDS: dict[str, dict[str, Any]] = {
     },
     "Sleep": {"duration": 3600, "locationID": "loc-1", "descID": "desc-1"},
     "Growth": {
-        "weight": 7.5,
-        "length": 21.0,
-        "head": 14.0,
-        "isEnglishLengthScale": 1,
-        "isEnglishWeightScale": 1,
+        "weight": {"BCObjectType": "WeightMeasure", "englishMeasure": "true", "value": 7.5},
+        "length": {"BCObjectType": "LengthMeasure", "englishMeasure": "true", "value": 21.0},
+        "head": {"BCObjectType": "LengthMeasure", "englishMeasure": "true", "value": 14.0},
+        "deleted": "false",
+        "queryIndex": 0,
     },
     "Medicine": {"medID": "med-1", "amount": 2.5},
     "Medication": {
@@ -84,10 +84,49 @@ TYPE_FIELDS: dict[str, dict[str, Any]] = {
         "leftTimestamps": [],
         "rightTimestamps": [],
     },
-    "Temperature": {"temp": 98.6, "isEnglishScale": 1},
-    "Vaccine": {"vaccID": "vacc-1", "docVisitID": "visit-1"},
-    "Milestone": {"milestoneSelectionID": "milestone-1"},
-    "OtherActivity": {"descID": "desc-1", "locationID": "loc-1", "duration": 900},
+    "Temperature": {
+        "temperature": {
+            "BCObjectType": "TemperatureMeasure",
+            "value": 100.4,
+            "englishMeasure": "true",
+        }
+    },
+    "Vaccine": {
+        "vaccineType": {
+            "BCObjectType": "VaccineSelection",
+            "objectID": "EasyLogSeed-vaccine-1",
+            "name": "Test Vaccine",
+            "desc": "",
+            "forAge": 2,
+            "newFlage": "false",
+            "timestamp": "2026-10-20 08:00:00 +0000",
+        },
+    },
+    "Milestone": {
+        "milestoneType": {
+            "BCObjectType": "MilestoneSelection",
+            "objectID": "EasyLogSeed-milestone-1",
+            "name": "Test Milestone",
+            "desc": "",
+            "forAge": 3,
+            "babyID": "",
+            "used": "true",
+            "newFlage": "false",
+            "timestamp": "2026-10-20 08:00:00 +0000",
+        },
+        "hasNewType": "false",
+    },
+    "OtherActivity": {
+        "desc": {
+            "BCObjectType": "OtherActivityDescription",
+            "objectID": "activity-desc-1",
+            "name": "Tummy time",
+            "desc": "",
+            "newFlage": "false",
+            "timestamp": "2026-10-20 08:00:00 +0000",
+        },
+        "duration": 15,
+    },
     "Bath": {"descID": "desc-1"},
     "Allergen": {"sourceID": "source-1", "reaction": "rash", "severity": 2, "notSure": 0},
     "HealthQuestion": {
