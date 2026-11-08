@@ -132,3 +132,41 @@ def test_the_side_reads_android_strings_and_anything_else_as_none(side: Any, exp
 
 def test_with_no_nursing_or_pump_there_is_no_last_breast() -> None:
     assert last_breast([record("Diaper", at(1))], NOW) is None
+
+
+@pytest.mark.parametrize(
+    ("fields", "minutes"),
+    [
+        ({"leftDuration": -5, "rightDuration": 7}, 7),
+        ({"leftDuration": 5.0, "rightDuration": 7}, 7),
+        ({"leftDuration": True, "rightDuration": 7}, 7),
+        ({"leftDuration": "", "rightDuration": " 7 "}, 0),
+        ({"leftDuration": None, "rightDuration": None, "bothDuration": None}, 0),
+    ],
+)
+def test_odd_nursing_minutes_add_nothing(fields: dict[str, Any], minutes: int) -> None:
+    result = day_totals([nursing(at(1), **fields)], BABY_ID, DAY_START, DAY_END)
+    assert (result.nursings, result.nursing_minutes) == (1, minutes)
+
+
+def test_a_nursing_with_no_minute_keys_still_counts_as_a_session() -> None:
+    payload = payload_for(
+        "Nursing",
+        object_id="AAAAAAAA-0000-4000-8000-999999999999",
+        time=at(1).strftime("%Y-%m-%d %H:%M:%S +0000"),
+        baby=baby_payload(object_id=BABY_ID),
+    )
+    for key in ("leftDuration", "rightDuration", "bothDuration"):
+        payload.pop(key, None)
+    result = day_totals([decode_payload(payload)], BABY_ID, DAY_START, DAY_END)
+    assert (result.nursings, result.nursing_minutes) == (1, 0)
+
+
+def test_a_session_exactly_at_now_counts_and_a_missing_side_is_none() -> None:
+    assert last_breast([nursing(NOW, side=None)], NOW) == LastBreast("nursing", SIDE_NONE, NOW)
+
+
+def test_a_pump_with_an_empty_label_is_still_a_pump() -> None:
+    assert last_breast([nursing(at(1)), pump(at(2), SIDE_LEFT, label="")], NOW) == LastBreast(
+        "pump", SIDE_LEFT, at(2)
+    )

@@ -98,10 +98,10 @@ def _session_minutes(nursing: Nursing) -> int:
     """A session's minutes on the left, on the right, and on both at once, added up.
 
     A side that isn't a whole number of minutes (or a string of digits, as Android may send)
-    adds nothing.
+    adds nothing, and nor does a negative one.
     """
     sides = (nursing.left_duration, nursing.right_duration, nursing.both_duration)
-    return sum(minutes for side in sides if (minutes := numeric_code(side)) is not None)
+    return sum(max(minutes, 0) for side in sides if (minutes := numeric_code(side)) is not None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,35 +121,30 @@ class LastBreast:
 def last_breast(records: Iterable[Record], now: datetime) -> LastBreast | None:
     """The newest nursing or pump up to ``now``, whichever baby it was for, as the app picks it.
 
-    The app's nursing and pump screens show this as the last side (app:
-    ``BTDatabaseImple.getLastBreastStateImpleOP``): the newest nursing of any baby (the same
-    mother feeds them all) and the newest pump without a ``label`` (a milk-stash adjustment has
-    one), not after now. The pump wins a tie. ``None`` when there is neither.
+    The app's nursing and pump screens show this as the last side: the newest nursing of any
+    baby (the same parent feeds them all) and the newest pump without a ``label`` (a milk-stash
+    adjustment has one), not after now. The pump wins a tie. ``None`` when there is neither.
     """
-    newest_nursing: Nursing | None = None
-    newest_pump: Pump | None = None
+    newest_nursing: tuple[datetime, Nursing] | None = None
+    newest_pump: tuple[datetime, Pump] | None = None
     for record in records:
-        if record.time is None or record.time > now:
+        time = record.time
+        if time is None or time > now:
             continue
         if isinstance(record, Nursing):
-            if newest_nursing is None or record.time > newest_nursing.time:  # type: ignore[operator]
-                newest_nursing = record
-        elif (isinstance(record, Pump) and not record.label) and (
-            newest_pump is None or record.time > newest_pump.time  # type: ignore[operator]
-        ):
-            newest_pump = record
-    if newest_nursing is not None and (
-        newest_pump is None or newest_nursing.time > newest_pump.time  # type: ignore[operator]
-    ):
-        chosen: Nursing | Pump = newest_nursing
-        kind = "nursing"
+            if newest_nursing is None or time > newest_nursing[0]:
+                newest_nursing = (time, record)
+        elif isinstance(record, Pump) and not record.label:
+            if newest_pump is None or time > newest_pump[0]:
+                newest_pump = (time, record)
+    chosen: Nursing | Pump
+    if newest_nursing is not None and (newest_pump is None or newest_nursing[0] > newest_pump[0]):
+        (time, chosen), kind = newest_nursing, "nursing"
     elif newest_pump is not None:
-        chosen = newest_pump
-        kind = "pump"
+        (time, chosen), kind = newest_pump, "pump"
     else:
         return None
     side = numeric_code(chosen.finish_side)
     if side not in (SIDE_LEFT, SIDE_RIGHT):
         side = SIDE_NONE
-    assert chosen.time is not None
-    return LastBreast(kind, side, chosen.time)
+    return LastBreast(kind, side, time)
