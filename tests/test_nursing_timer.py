@@ -159,6 +159,7 @@ def test_a_nursing_timer_round_trips_through_its_saved_form() -> None:
         "object_id": OBJECT_ID,
         "started": "2026-10-26T14:00:00+00:00",
         "side": "right",
+        "start_side": "left",
         "side_started": "2026-10-26T14:04:30+00:00",
         "left_seconds": 270.0,
         "right_seconds": 0.0,
@@ -186,6 +187,9 @@ def test_a_saved_timer_without_banked_seconds_reads_as_zero() -> None:
         {"left_seconds": math.nan},
         {"right_seconds": math.inf},
         {"left_seconds": "soon"},
+        {"start_side": "middle"},
+        {"start_side": ""},
+        {"start_side": 1},
     ],
 )
 def test_a_saved_nursing_timer_that_cannot_be_read_is_refused(change: dict[str, object]) -> None:
@@ -282,3 +286,45 @@ def test_a_saved_time_with_a_z_or_any_offset_reads_as_the_same_moment(
 def test_a_saved_time_keeps_its_offset_when_saved_again() -> None:
     saved = {**nursing().to_dict(), "started": "2026-10-26T10:00:00-04:00"}
     assert NursingTimer.from_dict(saved).to_dict()["started"] == "2026-10-26T10:00:00-04:00"
+
+
+@pytest.mark.parametrize("side", SIDES)
+def test_a_timer_remembers_the_side_it_started_on(side: str) -> None:
+    assert nursing(side).start_side == side
+
+
+def test_switching_sides_keeps_the_start_side() -> None:
+    timer = nursing(LEFT).switched(RIGHT, START + timedelta(minutes=5))
+    assert (timer.side, timer.start_side) == (RIGHT, LEFT)
+    timer = timer.switched(LEFT, START + timedelta(minutes=9))
+    assert (timer.side, timer.start_side) == (LEFT, LEFT)
+
+
+@pytest.mark.parametrize(
+    ("side", "left_seconds", "right_seconds", "start_side"),
+    [
+        # Nothing banked: it hasn't switched, so it started on the running side.
+        (LEFT, 0.0, 0.0, LEFT),
+        (RIGHT, 0.0, 0.0, RIGHT),
+        # Only the other side has time: it switched once, from that side.
+        (RIGHT, 270.0, 0.0, LEFT),
+        (LEFT, 0.0, 120.0, RIGHT),
+        # Time on both sides means more than one switch, so the start can't be told: running side.
+        (LEFT, 270.0, 120.0, LEFT),
+        (RIGHT, 270.0, 120.0, RIGHT),
+        # Time banked on the running side only: it switched away and back, from the running side.
+        (LEFT, 60.0, 0.0, LEFT),
+    ],
+)
+def test_a_timer_saved_before_the_start_side_was_kept_guesses_it_from_its_time(
+    side: str, left_seconds: float, right_seconds: float, start_side: str
+) -> None:
+    saved = {
+        "object_id": OBJECT_ID,
+        "started": "2026-10-26T14:00:00+00:00",
+        "side": side,
+        "side_started": "2026-10-26T14:04:30+00:00",
+        "left_seconds": left_seconds,
+        "right_seconds": right_seconds,
+    }
+    assert NursingTimer.from_dict(saved).start_side == start_side

@@ -563,13 +563,14 @@ async def test_nursing_with_no_time_ends_now(
     [
         (5, 0, None, SIDE_LEFT),
         (0, 5, None, SIDE_RIGHT),
-        (5, 5, None, SIDE_RIGHT),
+        # Both sides and no start side given: the start can't be told, so no side.
+        (5, 5, None, SIDE_NONE),
         (5, 5, SIDE_LEFT, SIDE_LEFT),
         (5, 0, SIDE_RIGHT, SIDE_RIGHT),
         (5, 5, SIDE_NONE, SIDE_NONE),
     ],
 )
-async def test_the_finish_side_defaults_to_the_last_side_nursed_and_an_explicit_one_wins(
+async def test_the_side_defaults_to_the_only_side_nursed_and_an_explicit_one_wins(
     left: int,
     right: int,
     finish: int | None,
@@ -605,7 +606,7 @@ async def test_a_nursing_record_decodes_with_both_durations_and_the_side(
     record = await engine.add_nursing(client, BABY_ID, left_minutes=7, right_minutes=3)
 
     assert isinstance(record, Nursing)
-    assert (record.left_duration, record.right_duration, record.finish_side) == (7, 3, SIDE_RIGHT)
+    assert (record.left_duration, record.right_duration, record.finish_side) == (7, 3, SIDE_NONE)
     assert record.is_detailed == "true"
     assert record.state == 5
 
@@ -649,6 +650,34 @@ async def test_a_one_sided_pump_writes_zero_for_the_other_side_in_the_same_unit(
     assert payload["rightDuration"] == 0
     assert payload["finishSide"] == SIDE_LEFT
     assert payload["sides"] == 0
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "expected"),
+    [
+        (Volume(2, "oz"), None, SIDE_LEFT),
+        (None, Volume(2, "oz"), SIDE_RIGHT),
+        # The app saves a two-sided pump with no side.
+        (Volume(2, "oz"), Volume(3, "oz"), SIDE_NONE),
+    ],
+)
+async def test_a_pumps_side_defaults_to_the_only_side_used(
+    left: Volume | None,
+    right: Volume | None,
+    expected: int,
+    client: BabyTrackerClient,
+    fake_server: FakeSyncServer,
+) -> None:
+    engine = await ready(client, fake_server)
+    volumes: dict[str, Any] = {}
+    if left is not None:
+        volumes["left_volume"] = left
+    if right is not None:
+        volumes["right_volume"] = right
+
+    await engine.add_pump(client, **volumes)
+
+    assert posted(fake_server)["finishSide"] == expected
 
 
 async def test_a_pump_decodes_back_to_the_volumes_written(

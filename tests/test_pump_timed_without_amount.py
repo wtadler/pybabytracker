@@ -15,7 +15,15 @@ import pytest
 from fake_server import FakeSyncServer
 from test_write_types import posted, ready
 
-from pybabytracker import SIDE_LEFT, SIDE_RIGHT, BabyTrackerClient, Pump, Volume, decode_payload
+from pybabytracker import (
+    SIDE_LEFT,
+    SIDE_NONE,
+    SIDE_RIGHT,
+    BabyTrackerClient,
+    Pump,
+    Volume,
+    decode_payload,
+)
 
 
 async def test_a_pump_with_only_durations_has_a_zero_amount_and_no_side_amounts(
@@ -74,8 +82,8 @@ async def test_a_duration_only_pump_takes_the_finish_side_like_any_pump(
 
     await engine.add_pump(client, left_minutes=3, right_minutes=3, finish_side=finish_side)
 
-    # Right when both sides were used and none is named, as in every pump.
-    assert posted(fake_server)["finishSide"] == (SIDE_RIGHT if finish_side is None else finish_side)
+    # No side when both sides were used and none is named, as in every pump.
+    assert posted(fake_server)["finishSide"] == (SIDE_NONE if finish_side is None else finish_side)
 
 
 async def test_a_one_sided_duration_only_pump_finishes_on_that_side(

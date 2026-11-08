@@ -122,10 +122,11 @@ key.
   `timezone_offset=standard_offset_seconds(tz, time)`: New York is -18000 in July and January.
 - Nursing: `time` is the session's start, as in the capture. Give `start_time`, or `end_time`
   (start is end minus the total minutes), or neither (the session just ended). `finish_side` is
-  `SIDE_LEFT` (1), `SIDE_RIGHT` (2), or `SIDE_NONE` (0), the app's numbering, defaulting to the
-  last side used (right when both were). The app shows the field as the side a session started
-  on, and saves most pumps that used both sides with `SIDE_NONE`, so pass `finish_side` yourself
-  when you know it.
+  `SIDE_LEFT` (1), `SIDE_RIGHT` (2), or `SIDE_NONE` (0), the app's numbering. The app shows the
+  field as the side a session started on. It defaults to the only side used, or `SIDE_NONE` when
+  both were, since the totals can't tell which came first (the app also saves most two-sided
+  pumps with `SIDE_NONE`), so pass `finish_side` yourself when you know it. A `NursingTimer`
+  knows: its `start_side` is the side it started on.
 - Sleep: `time` is `start`. `duration` is whole minutes: the length rounded half up (the capture
   stored about 30 seconds as 1), and at least 1, because a duration of 0 means a sleep in
   progress. `end` must be after `start`, and a sleep can't be longer than 24 hours.

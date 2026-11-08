@@ -59,8 +59,10 @@ class NursingTimer:
     """A running nursing session: when it began, the side now, and the time on finished sides.
 
     ``left_seconds`` and ``right_seconds`` count only the stretches before ``side_started``; the
-    current side's running time is ``now - side_started``. ``object_id`` is the record the stop
-    writes, chosen at the start so a retried stop can't write twice.
+    current side's running time is ``now - side_started``. ``start_side`` is the side the session
+    began on, which the app records as a nursing's side (``finishSide``); it defaults to ``side``.
+    ``object_id`` is the record the stop writes, chosen at the start so a retried stop can't write
+    twice.
     """
 
     object_id: str
@@ -69,6 +71,11 @@ class NursingTimer:
     side_started: datetime
     left_seconds: float = 0.0
     right_seconds: float = 0.0
+    start_side: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.start_side:
+            object.__setattr__(self, "start_side", self.side)
 
     @classmethod
     def start(cls, object_id: str, side: str, now: datetime) -> NursingTimer:
@@ -119,6 +126,7 @@ class NursingTimer:
             "object_id": self.object_id,
             "started": self.started.isoformat(),
             "side": self.side,
+            "start_side": self.start_side,
             "side_started": self.side_started.isoformat(),
             "left_seconds": self.left_seconds,
             "right_seconds": self.right_seconds,
@@ -139,7 +147,27 @@ class NursingTimer:
         right = float(data.get("right_seconds", 0.0))
         if not (math.isfinite(left) and math.isfinite(right)) or left < 0 or right < 0:
             raise ValueError("bad seconds")
-        return cls(str(data["object_id"]), started, side, side_started, left, right)
+        if "start_side" in data:
+            start_side = data["start_side"]
+            if start_side not in SIDES:
+                raise ValueError(f"unknown start side {start_side!r}")
+        else:
+            start_side = _guess_start_side(side, left, right)
+        return cls(str(data["object_id"]), started, side, side_started, left, right, start_side)
+
+
+def _guess_start_side(side: str, left_seconds: float, right_seconds: float) -> str:
+    """The start side of a timer saved before it was kept, from the time banked on each side.
+
+    Time only on the other side means one switch, from that side. Anything else (nothing banked,
+    time on the running side, or time on both, which means more than one switch) reads as the
+    running side.
+    """
+    other = other_side(side)
+    banked = {LEFT: left_seconds, RIGHT: right_seconds}
+    if banked[other] > 0 and banked[side] == 0:
+        return other
+    return side
 
 
 @dataclass(frozen=True, slots=True)

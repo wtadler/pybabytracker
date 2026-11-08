@@ -134,14 +134,18 @@ def _minutes(value: object, name: str) -> int:
 
 
 def _side(finish_side: int | None, left_used: bool, right_used: bool) -> int:
-    """The side finished on: as given, else the last side used (right when both were)."""
+    """The record's side (``finishSide``, which the app shows as the side a session started on):
+    as given, else the only side used, else ``SIDE_NONE`` when both were, since the start can't be
+    told from the totals. The app also saves a two-sided pump with no side."""
     if finish_side is not None:
         if isinstance(finish_side, bool) or finish_side not in (SIDE_NONE, SIDE_LEFT, SIDE_RIGHT):
             raise ValueError(
                 f"finish_side must be SIDE_LEFT, SIDE_RIGHT, or SIDE_NONE, not {finish_side!r}"
             )
         return finish_side
-    return SIDE_LEFT if left_used and not right_used else SIDE_RIGHT
+    if left_used and right_used:
+        return SIDE_NONE
+    return SIDE_LEFT if left_used else SIDE_RIGHT
 
 
 def _base(
