@@ -81,6 +81,13 @@ class FakeSyncServer:
         self.pictures: dict[str, bytes] = {}
         # The status for a picture it doesn't have: the live service answers 400.
         self.missing_picture_status = 400
+        # A picture file name that answers with a redirect to this location.
+        self.picture_redirects: dict[str, str] = {}
+        self.redirect_status = 302
+        # The raw (still percent-encoded) path of each picture request, in order.
+        self.picture_raw_paths: list[str] = []
+        # Send picture bodies in chunks, with no Content-Length.
+        self.picture_chunked = False
 
     # --- test setup helpers -------------------------------------------------
 
@@ -124,6 +131,7 @@ class FakeSyncServer:
         app.router.add_get("/account/transaction/{uuid}/{since}", self._get_transactions)
         app.router.add_post("/account/transaction", self._post_transaction)
         app.router.add_get("/account/picture/{name}", self._get_picture)
+        app.router.add_get("/elsewhere/{name}", self._get_elsewhere)
         return app
 
     @staticmethod
@@ -169,13 +177,30 @@ class FakeSyncServer:
                 return web.Response(status=status, text="forced")
         return None
 
-    async def _get_picture(self, request: web.Request) -> web.Response:
+    async def _get_picture(self, request: web.Request) -> web.StreamResponse:
         if (rejected := await self._guard(request)) is not None:
             return rejected
-        content = self.pictures.get(request.match_info["name"])
+        self.picture_raw_paths.append(request.raw_path)
+        name = request.match_info["name"]
+        if name in self.picture_redirects:
+            return web.Response(
+                status=self.redirect_status, headers={"Location": self.picture_redirects[name]}
+            )
+        content = self.pictures.get(name)
         if content is None:
             return web.Response(status=self.missing_picture_status, text="Not Found")
+        if self.picture_chunked:
+            stream = web.StreamResponse(headers={"Content-Type": "image/jpeg"})
+            await stream.prepare(request)
+            for start in range(0, len(content), 512):
+                await stream.write(content[start : start + 512])
+            await stream.write_eof()
+            return stream
         return web.Response(body=content, content_type="image/jpeg")
+
+    async def _get_elsewhere(self, request: web.Request) -> web.Response:
+        await self._record(request)
+        return web.Response(body=b"elsewhere", content_type="image/jpeg")
 
     async def _get_devices(self, request: web.Request) -> web.Response:
         if (rejected := await self._guard(request)) is not None:

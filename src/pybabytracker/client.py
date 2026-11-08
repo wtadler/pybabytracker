@@ -20,12 +20,14 @@ from .exceptions import (
     NoResponseError,
     ProtocolError,
 )
+from .models import is_plain_file_name
 
 _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://prodapp.babytrackers.com"
 DEFAULT_TIMEOUT = 30.0
 USER_AGENT = f"pybabytracker/{__version__}"
+MAX_PICTURE_BYTES = 20 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,16 +207,20 @@ class BabyTrackerClient:
     async def get_picture(self, file_name: str) -> bytes | None:
         """Download a picture file, such as a baby's photo (``Baby.picture_file``).
 
-        Returns ``None`` when the service doesn't have the file. It answers ``400`` for that (seen
-        for a picture's ".mp4" name when the picture is a photo), so ``400`` and ``404`` both
-        mean no file. A name with a path
-        separator, or none at all, raises ``ValueError`` without a request: names come from
-        other devices' records.
+        Returns ``None`` when the service doesn't have the file: it has answered ``400`` for a
+        file it doesn't have (seen for a photo's ".mp4" name), and ``404`` is expected, not yet
+        seen, so both mean no file. Any other error status raises, as for the other calls.
+
+        A redirect raises ``ProtocolError`` and is not followed, and so does a body over
+        ``MAX_PICTURE_BYTES``. A name that is empty, only whitespace, not a string, or has a path
+        separator raises ``ValueError`` without a request: names come from other devices' records.
         """
-        if not file_name or "/" in file_name or "\\" in file_name or file_name in (".", ".."):
+        if not is_plain_file_name(file_name):
             raise ValueError(f"not a picture file name: {file_name!r}")
         path = f"/account/picture/{quote(file_name, safe='')}"
         status, content = await self._authorized(lambda: self._send_bytes(path), allow=(400, 404))
+        if 300 <= status < 400:
+            raise ProtocolError(f"the service redirected the picture request (HTTP {status})")
         return None if status in (400, 404) else content
 
     async def _request(
@@ -259,7 +265,7 @@ class BabyTrackerClient:
         return await self._exchange(method, path, body, lambda response: response.text())
 
     async def _send_bytes(self, path: str) -> tuple[int, bytes]:
-        return await self._exchange("GET", path, None, lambda response: response.read())
+        return await self._exchange("GET", path, None, _read_capped, allow_redirects=False)
 
     async def _exchange[T](
         self,
@@ -267,6 +273,8 @@ class BabyTrackerClient:
         path: str,
         body: Any,
         read: Callable[[aiohttp.ClientResponse], Awaitable[T]],
+        *,
+        allow_redirects: bool = True,
     ) -> tuple[int, T]:
         if self._session is None:
             self._session = aiohttp.ClientSession(
@@ -279,6 +287,7 @@ class BabyTrackerClient:
                 json=body,
                 headers={"User-Agent": USER_AGENT},
                 timeout=self._timeout,
+                allow_redirects=allow_redirects,
             ) as response:
                 return response.status, await read(response)
         except aiohttp.ClientConnectorError as err:
@@ -287,6 +296,24 @@ class BabyTrackerClient:
         except (aiohttp.ClientError, TimeoutError) as err:
             # Sent, but no answer came back: the service may or may not have acted on it.
             raise NoResponseError(f"no answer from the service: {err!r}") from err
+
+
+async def _read_capped(response: aiohttp.ClientResponse) -> bytes:
+    """The body of ``response``, or ``ProtocolError`` when it's over ``MAX_PICTURE_BYTES``.
+
+    A redirect or an error status has its body skipped, since only the status is used.
+    """
+    if response.status >= 300:
+        return b""
+    cap = MAX_PICTURE_BYTES
+    if response.content_length is not None and response.content_length > cap:
+        raise ProtocolError(f"the picture is larger than {cap} bytes")
+    body = bytearray()
+    async for chunk in response.content.iter_chunked(64 * 1024):
+        body += chunk
+        if len(body) > cap:
+            raise ProtocolError(f"the picture is larger than {cap} bytes")
+    return bytes(body)
 
 
 def _parse_entry(entry: Any) -> RawTransaction | None:
