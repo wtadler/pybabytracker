@@ -41,7 +41,9 @@ from .models import (
     SIDE_LEFT,
     SIDE_NONE,
     SIDE_RIGHT,
+    UNIT_CELSIUS,
     UNIT_CENTIMETERS,
+    UNIT_FAHRENHEIT,
     UNIT_INCHES,
     UNIT_KILOGRAMS,
     UNIT_MILLILITERS,
@@ -86,7 +88,7 @@ from .models import (
 from .selections import BUILT_IN_MILESTONES, BUILT_IN_VACCINES, MilestoneChoice, SelectionChoice
 from .timers import NursingTimer, PumpTimer
 from .times import format_time, from_unix, parse_time, standard_offset_seconds, to_unix
-from .totals import DayTotals, day_totals
+from .totals import DayTotals, LastBreast, day_totals, last_breast
 
 __all__ = [
     "BUILT_IN_MILESTONES",
@@ -122,6 +124,7 @@ __all__ = [
     "InvalidAmountError",
     "Journal",
     "Joy",
+    "LastBreast",
     "Measurement",
     "Medication",
     "Medicine",
@@ -160,7 +163,9 @@ __all__ = [
     "Temperature",
     "TimerNotRunningError",
     "TransactionDecodeError",
+    "UNIT_CELSIUS",
     "UNIT_CENTIMETERS",
+    "UNIT_FAHRENHEIT",
     "UNIT_INCHES",
     "UNIT_KILOGRAMS",
     "UNIT_MILLILITERS",
@@ -182,6 +187,7 @@ __all__ = [
     "encode_transaction",
     "format_time",
     "from_unix",
+    "last_breast",
     "numeric_code",
     "parse_time",
     "standard_offset_seconds",

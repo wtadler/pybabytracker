@@ -84,7 +84,13 @@ TYPE_FIELDS: dict[str, dict[str, Any]] = {
         "leftTimestamps": [],
         "rightTimestamps": [],
     },
-    "Temperature": {"temp": 98.6, "isEnglishScale": 1},
+    "Temperature": {
+        "temperature": {
+            "BCObjectType": "TemperatureMeasure",
+            "value": 100.4,
+            "englishMeasure": "true",
+        }
+    },
     "Vaccine": {
         "vaccineType": {
             "BCObjectType": "VaccineSelection",
