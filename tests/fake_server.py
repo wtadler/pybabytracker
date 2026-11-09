@@ -79,6 +79,9 @@ class FakeSyncServer:
         self.base_url = ""
         # The sync group's AccountID that POST /session answers with (a reset changes it).
         self.account_id = 424242
+        # A reset that happens as the next matching request arrives: (method, path prefix, new
+        # AccountID). It changes the AccountID and ends every session, so that request gets a 401.
+        self.reset_on_request: tuple[str, str, int] | None = None
         # Picture files the service has, by file name.
         self.pictures: dict[str, bytes] = {}
         # The status for a picture it doesn't have: the live service answers 400.
@@ -168,6 +171,12 @@ class FakeSyncServer:
 
     async def _guard(self, request: web.Request) -> web.Response | None:
         await self._record(request)
+        if self.reset_on_request is not None:
+            method, prefix, new_account_id = self.reset_on_request
+            if request.method == method and request.path.startswith(prefix):
+                self.reset_on_request = None
+                self.account_id = new_account_id
+                self.sessions.clear()
         if self.delay:
             await asyncio.sleep(self.delay)
         if self.always_unauthorized or request.cookies.get("PHPSESSID") not in self.sessions:

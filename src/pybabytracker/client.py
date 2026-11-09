@@ -15,12 +15,13 @@ import aiohttp
 
 from ._version import __version__
 from .exceptions import (
+    AccountChangedError,
     AuthenticationError,
     BabyTrackerConnectionError,
     NoResponseError,
     ProtocolError,
 )
-from .models import is_plain_file_name
+from .models import is_account_id, is_plain_file_name
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -121,7 +122,12 @@ class BabyTrackerClient:
             self._session = None
 
     async def sign_in(self) -> int:
-        """Start a session. Raises ``AuthenticationError`` if the credentials are rejected."""
+        """Start a session. Raises ``AuthenticationError`` if the credentials are rejected.
+
+        Raises ``AccountChangedError`` if this client already signed in to a different sync
+        group, which includes a sign-in made to recover from a 401 inside another call. The
+        call that needed it is not retried.
+        """
         async with self._sign_in_lock:
             return await self._sign_in()
 
@@ -146,8 +152,11 @@ class BabyTrackerClient:
         _raise_for_status(status)
         data = _parse_json(text)
         account_id = data.get("AccountID") if isinstance(data, dict) else None
-        if not isinstance(account_id, int):
+        if not is_account_id(account_id):
             raise ProtocolError("sign-in reply had no AccountID")
+        if self._account_id is not None and account_id != self._account_id:
+            # The sync group was reset. Stay signed out, so nothing more is sent to the new one.
+            raise AccountChangedError(self._account_id, account_id)
         self._signed_in = True
         self._generation += 1
         self._account_id = account_id

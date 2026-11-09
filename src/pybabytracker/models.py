@@ -16,7 +16,7 @@ import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from datetime import datetime
-from typing import Any, ClassVar, NamedTuple, Self
+from typing import Any, ClassVar, NamedTuple, Self, TypeGuard
 
 from .exceptions import TransactionDecodeError
 from .times import format_time, parse_time
@@ -240,6 +240,11 @@ def _volume_of(amount: Any, is_english_scale: Any) -> Volume | None:
     if is_english_scale == 0:
         return Volume(number, UNIT_MILLILITERS)
     return None
+
+
+def is_account_id(value: object) -> TypeGuard[int]:
+    """Whether ``value`` can be a sync group's ``AccountID``: an integer, and not a bool."""
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def is_plain_file_name(name: object) -> bool:

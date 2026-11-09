@@ -26,11 +26,14 @@ class ProtocolError(BabyTrackerError):
 
 
 class AccountChangedError(BabyTrackerError):
-    """The sign-in opened a different sync group from the one the engine's state came from.
+    """A sign-in opened a different sync group (``AccountID``) from the one already in use.
 
     The app compares the ``AccountID`` from each sign-in with the one it stored, and stops
     syncing when they differ: the group was reset or recreated, so the saved records and progress
-    belong to the old one. Nothing is read or written until the caller starts from a new engine.
+    belong to the old one. The client raises this for a sign-in that differs from its own earlier
+    one, before it retries the request that needed the sign-in, and the engine raises it when the
+    ``AccountID`` differs from the one in its state. Start from a new engine to join the new
+    group. Records read before the sign-in are not undone.
     """
 
     def __init__(self, saved: int, signed_in: int) -> None:

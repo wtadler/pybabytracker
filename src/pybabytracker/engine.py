@@ -142,6 +142,7 @@ from .models import (
     decode_payload,
     decode_transaction,
     encode_transaction,
+    is_account_id,
 )
 from .selections import (
     BUILT_IN_MILESTONES,
@@ -294,7 +295,7 @@ class SyncEngine:
         trusted. Call it after a request, so the client has signed in by then.
         """
         account_id = getattr(source, "account_id", None)
-        if not isinstance(account_id, int) or isinstance(account_id, bool):
+        if not is_account_id(account_id):
             return
         if self._account_id is None:
             self._account_id = account_id
@@ -958,6 +959,7 @@ class SyncEngine:
         applied = skipped = 0
         while (since := self._last_seen.get(device_uuid, 0)) < last:
             transactions = await source.get_transactions(device_uuid, since)
+            self._check_account(source)  # a sign-in during the read may have joined a new group
             result = self.apply(device_uuid, transactions)
             applied += result.applied
             skipped += result.skipped
@@ -1148,7 +1150,7 @@ class SyncEngine:
         }
         engine._own_updates = {str(i) for i in data.get("own_updates", [])}
         account_id = data.get("account_id")
-        engine._account_id = account_id if isinstance(account_id, int) else None
+        engine._account_id = account_id if is_account_id(account_id) else None
         for entry in data["records"]:
             if version == 1:
                 record = decode_payload(entry)

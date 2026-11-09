@@ -36,8 +36,10 @@ async with aiohttp.ClientSession() as session:
   sign-in and a retry before it becomes an `AuthenticationError`.
 - `AccountChangedError` means a sign-in opened a different sync group (`AccountID`) from the one
   the engine's state came from: the group was reset in the app. The engine saves the first
-  `AccountID` it sees and refuses to sync or write after it changes, as the app does. Start from a
-  new engine to join the new group.
+  `AccountID` it sees and refuses to sync or write after it changes, as the app does; the client
+  also refuses a sign-in to a different group from its own earlier one. Start from a new engine to
+  join the new group. State saved before this version adopts the first `AccountID` it sees, so a
+  reset that happened before upgrading isn't detected.
 - Records are typed (`Diaper`, `Sleep`, `Nursing`, and so on). A record type the library
   doesn't know stays raw as an `UnknownRecord` (a debug line is logged once per type).
   `Medication` is a medicine dose with the medicine embedded, and `NursingSession`, the Android
