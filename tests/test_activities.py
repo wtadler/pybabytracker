@@ -12,6 +12,7 @@ from selection_helpers import posted, rid, seed, synced
 
 from pybabytracker import (
     BUILT_IN_ACTIVITIES,
+    AccountChangedError,
     BabyTrackerClient,
     OtherActivity,
     UnknownActivityError,
@@ -147,3 +148,29 @@ async def test_a_day_long_activity_is_allowed(
         client, BABY_ID, "Crawling", duration=MAX_ACTIVITY_MINUTES, time=EVENT_TIME
     )
     assert record.duration == MAX_ACTIVITY_MINUTES
+
+
+async def test_an_activity_after_the_group_is_reset_posts_nothing(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    seed(fake_server)
+    engine = await synced(client)
+    fake_server.account_id = 777  # the group was reset in the app
+    fake_server.sessions.clear()
+
+    with pytest.raises(AccountChangedError):
+        await engine.add_activity(client, BABY_ID, "Crawling", time=EVENT_TIME)
+    assert posted(fake_server) == []
+
+
+async def test_an_activity_refused_by_a_reset_at_the_post_leaves_nothing_pending(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    seed(fake_server)
+    engine = await synced(client)
+    fake_server.reset_on_request = ("POST", "/account/transaction", 777)
+
+    with pytest.raises(AccountChangedError):
+        await engine.add_activity(client, BABY_ID, "Crawling", time=EVENT_TIME)
+    assert posted(fake_server) == []
+    assert not engine.to_dict()["pending"]
