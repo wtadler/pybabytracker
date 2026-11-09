@@ -156,6 +156,20 @@ BUILT_IN_MILESTONES: tuple[SelectionChoice, ...] = tuple(
     _seed("MilestoneSelection", *row, forAge=0, used="false") for row in _BUILT_IN_MILESTONES
 )
 
+# The activity types the app ships with, in its order.
+_BUILT_IN_ACTIVITIES: tuple[tuple[str, str], ...] = (
+    ("EasyLogSeed20029ae0-8cbf-11e2-9e96-0800200c9a66", "Crawling"),
+    ("EasyLogSeed2cfd0dc0-8cbf-11e2-9e96-0800200c9a66", "Cruising"),
+    ("EasyLogSeed3559dca0-8cbf-11e2-9e96-0800200c9a66", "Tummy Time"),
+    ("EasyLogSeed537ed780-8cbf-11e2-9e96-0800200c9a66", "TV Time"),
+    ("EasyLogSeed5b0a4ca0-8cbf-11e2-9e96-0800200c9a66", "Story Time"),
+)
+
+BUILT_IN_ACTIVITIES: tuple[SelectionChoice, ...] = tuple(
+    _seed("OtherActivityDescription", object_id, name, "")
+    for object_id, name in _BUILT_IN_ACTIVITIES
+)
+
 BUILT_IN_VACCINES: tuple[SelectionChoice, ...] = tuple(
     _seed("VaccineSelection", *row, forAge=0) for row in _BUILT_IN_VACCINES
 )

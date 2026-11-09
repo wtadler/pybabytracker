@@ -96,6 +96,7 @@ key.
 | `add_milestone(client, baby_id, milestone, ...)` | `Milestone` | `milestone` is a name or ID from `milestone_choices(baby_id)` |
 | `add_vaccine(client, baby_id, vaccine, ...)` | `Vaccine` | `vaccine` is a name or ID from `vaccine_choices()` |
 | `add_medication(client, baby_id, medicine, amount=None, ...)` | `Medication` | a dose; `medicine` is a name or ID from `medicine_choices()`, `amount` defaults to its usual dose |
+| `add_activity(client, baby_id, activity, duration=0, ...)` | `OtherActivity` | tummy time, a bath, and so on; `activity` is a name or ID from `activity_choices()` |
 
 - A milestone names one from the app's pick list: one of the 20 it ships with
   (`BUILT_IN_MILESTONES`, under the app's own `EasyLogSeed` IDs, which never sync) or one added
@@ -109,7 +110,11 @@ key.
   list isn't supported yet. Vaccines work the same way: the app's 10 built-ins
   (`BUILT_IN_VACCINES`) plus synced ones, `vaccine_choices()`, `find_vaccine`, and
   `UnknownVaccineError`. A medicine has no built-ins: `medicine_choices()` lists the ones doses
-  already carry, and a `Medication` is logged against one by name or ID.
+  already carry, and a `Medication` is logged against one by name or ID. Activity types work
+  like vaccines: the app's 5 built-ins (`BUILT_IN_ACTIVITIES`: Crawling, Cruising, Tummy Time, TV
+  Time, Story Time) plus ones added in the app, `activity_choices()`, `find_activity`, and
+  `UnknownActivityError`. The app has no bath screen: a bath is an activity of a type added in
+  the app, such as "Bath". An activity's `duration` is whole minutes, 0 when not timed.
 - Where several records carry a copy of one entry, a synced copy wins, then the copy in the
   newest record (by its `timestamp`, then its `time`), so a dose's default amount is the usual
   dose of the newest dose. A medicine without a usual dose that is a number above zero needs an

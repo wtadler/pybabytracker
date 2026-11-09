@@ -1,6 +1,7 @@
 """Async client for the Nighp Baby Tracker sync service."""
 
 from ._version import __version__
+from .builders import MAX_ACTIVITY_MINUTES
 from .client import BabyTrackerClient, Device, RawTransaction
 from .engine import ApplyResult, SyncEngine, SyncResult, SyncSource
 from .exceptions import (
@@ -25,6 +26,7 @@ from .exceptions import (
     SleepTooLongError,
     TimerNotRunningError,
     TransactionDecodeError,
+    UnknownActivityError,
     UnknownBabyError,
     UnknownMedicineError,
     UnknownMilestoneError,
@@ -93,12 +95,18 @@ from .models import (
     encode_transaction,
     numeric_code,
 )
-from .selections import BUILT_IN_MILESTONES, BUILT_IN_VACCINES, SelectionChoice
+from .selections import (
+    BUILT_IN_ACTIVITIES,
+    BUILT_IN_MILESTONES,
+    BUILT_IN_VACCINES,
+    SelectionChoice,
+)
 from .timers import NursingTimer, PumpTimer
 from .times import format_time, from_unix, parse_time, standard_offset_seconds, to_unix
 from .totals import DayTotals, LastBreast, day_totals, last_breast
 
 __all__ = [
+    "MAX_ACTIVITY_MINUTES",
     "MEDIA_PHOTO",
     "MEDIA_VIDEO",
     "Picture",
@@ -108,6 +116,7 @@ __all__ = [
     "AmountTooSmallError",
     "ApplyResult",
     "AuthenticationError",
+    "BUILT_IN_ACTIVITIES",
     "BUILT_IN_MILESTONES",
     "BUILT_IN_VACCINES",
     "Baby",
@@ -182,6 +191,7 @@ __all__ = [
     "UNIT_OUNCES",
     "UNIT_POUNDS",
     "UnknownBabyError",
+    "UnknownActivityError",
     "UnknownMedicineError",
     "UnknownMilestoneError",
     "UnknownRecord",

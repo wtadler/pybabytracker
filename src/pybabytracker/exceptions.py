@@ -63,9 +63,10 @@ class UnknownBabyError(WriteError):
 
 
 class UnknownSelectionError(WriteError):
-    """No entry of a pick list (a milestone, a vaccine, a medicine) has that name or ID.
+    """No entry of a pick list (a milestone, a vaccine, a medicine, an activity type) has that
+    name or ID.
 
-    ``what`` says which list: "milestone", "vaccine", or "medicine".
+    ``what`` says which list: "milestone", "vaccine", "medicine", or "activity".
     """
 
     def __init__(self, what: str, message: str) -> None:
@@ -85,6 +86,13 @@ class UnknownMedicineError(UnknownSelectionError):
 
     def __init__(self, message: str) -> None:
         super().__init__("medicine", message)
+
+
+class UnknownActivityError(UnknownSelectionError):
+    """No activity type with that name or ID is built in or known from sync."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__("activity", message)
 
 
 class UnknownVaccineError(UnknownSelectionError):

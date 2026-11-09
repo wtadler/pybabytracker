@@ -46,6 +46,7 @@ from .models import (
     Medication,
     Milestone,
     Nursing,
+    OtherActivity,
     Pump,
     Pumped,
     Record,
@@ -210,6 +211,43 @@ def draft_milestone(
         )
 
     return Draft(Milestone, build)
+
+
+# The longest activity, in minutes: a day. A guard against seconds passed as minutes.
+MAX_ACTIVITY_MINUTES = 24 * 60
+
+
+def draft_activity(
+    selection: Mapping[str, Any],
+    *,
+    duration: int,
+    time: datetime | None,
+    timezone_offset: int | None,
+    note: str,
+) -> Draft[OtherActivity]:
+    """An activity, such as tummy time or a bath, embedding its type as ``desc``.
+
+    ``duration`` is whole minutes, 0 when not timed, as the apps send it. The record has the
+    keys the iPhone app sends, and not ``descID`` or ``locationID``, which the model reads but
+    the app keeps in its local database.
+    """
+    if isinstance(duration, bool) or not isinstance(duration, int):
+        raise ValueError("duration must be a whole number of minutes")
+    if duration < 0:
+        raise ValueError("duration can't be negative")
+    if duration > MAX_ACTIVITY_MINUTES:
+        raise ValueError(f"duration can't be more than {MAX_ACTIVITY_MINUTES} minutes")
+    embedded = dict(selection)
+    event, tz, text = _common(time, timezone_offset, note)
+
+    def build(object_id: str, baby: Baby | None, timestamp: datetime) -> OtherActivity:
+        return OtherActivity(
+            **_base(object_id, baby, timestamp, event, tz, text),
+            desc=dict(embedded),
+            duration=duration,
+        )
+
+    return Draft(OtherActivity, build)
 
 
 def _usual_dose(selection: Mapping[str, Any]) -> int | float | None:

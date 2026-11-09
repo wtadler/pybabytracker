@@ -84,6 +84,7 @@ from typing import Any, Protocol
 
 from .builders import (
     Draft,
+    draft_activity,
     draft_bottle,
     draft_diaper,
     draft_medication,
@@ -110,6 +111,7 @@ from .exceptions import (
     RecordNotFoundError,
     TimerNotRunningError,
     TransactionDecodeError,
+    UnknownActivityError,
     UnknownBabyError,
     UnknownMedicineError,
     UnknownMilestoneError,
@@ -131,6 +133,7 @@ from .models import (
     Milestone,
     MilestoneSelection,
     Nursing,
+    OtherActivity,
     Pump,
     Pumped,
     Record,
@@ -145,6 +148,7 @@ from .models import (
     is_account_id,
 )
 from .selections import (
+    BUILT_IN_ACTIVITIES,
     BUILT_IN_MILESTONES,
     BUILT_IN_VACCINES,
     SelectionChoice,
@@ -489,6 +493,66 @@ class SyncEngine:
         found = find_choice(self.vaccine_choices(), _wanted(vaccine, "vaccine"), "vaccine")
         if found is None:
             raise UnknownVaccineError(f"no vaccine {vaccine!r} is built in or known from sync")
+        return found
+
+    async def add_activity(
+        self,
+        target: WriteTarget,
+        baby_id: str,
+        activity: str,
+        *,
+        duration: int = 0,
+        time: datetime | None = None,
+        timezone_offset: int | None = None,
+        note: str = "",
+        object_id: str | None = None,
+    ) -> OtherActivity:
+        """Post an activity, such as tummy time or a bath, and apply it locally.
+
+        ``activity`` is a name or ID from ``activity_choices()``: one of the app's built-in
+        types (``BUILT_IN_ACTIVITIES``) or one added in the app and known from sync, matched as
+        for ``add_milestone``. The record embeds it as ``desc``. ``duration`` is whole minutes,
+        0 (the default) when it wasn't timed, at most ``MAX_ACTIVITY_MINUTES``. Bad input raises
+        the errors ``add_milestone`` does (``UnknownActivityError`` for an unknown type) or
+        ``ValueError`` for a bad duration, before any request; adding a new type to the pick
+        list isn't supported yet. The other arguments work as for ``add_diaper``.
+        """
+        self._check_baby(target, baby_id)
+
+        def resolve() -> Draft[OtherActivity]:
+            choice = self.find_activity(activity)
+            return draft_activity(
+                choice.selection,
+                duration=duration,
+                time=time,
+                timezone_offset=timezone_offset,
+                note=note,
+            )
+
+        resolve()
+        return await self._add(target, baby_id, resolve, object_id)
+
+    def activity_choices(self) -> list[SelectionChoice]:
+        """Every activity type a record can name: the app's built-ins in its order, then added
+        ones, by name. Copies are chosen as for ``milestone_choices``. A type added in the app
+        syncs as its own ``OtherActivityDescription`` record (kept raw) and is embedded in each
+        activity of that type.
+        """
+        synced = [
+            r.to_payload()
+            for r in self._records.values()
+            if r.record_type == "OtherActivityDescription"
+        ]
+        embedded = [
+            embedded_copy(r, r.desc) for r in self._records.values() if isinstance(r, OtherActivity)
+        ]
+        return merged_choices(BUILT_IN_ACTIVITIES, embedded, synced)
+
+    def find_activity(self, activity: str) -> SelectionChoice:
+        """The activity type with that ID, or else that name; errors as for ``find_milestone``."""
+        found = find_choice(self.activity_choices(), _wanted(activity, "activity"), "activity")
+        if found is None:
+            raise UnknownActivityError(f"no activity {activity!r} is built in or known from sync")
         return found
 
     async def add_medication(
