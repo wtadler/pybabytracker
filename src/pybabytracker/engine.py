@@ -1062,20 +1062,22 @@ class SyncEngine:
 
         A download that fails is warned about and tried again on the next sync; the logs still
         sync meanwhile. A seed that downloads but can't be read is warned about and not tried
-        again. A rejected sign-in raises, as it would for the logs.
+        again. A rejected sign-in, or a sign-in to a different sync group, raises, as it would
+        for the logs.
         """
         get_seed = getattr(source, "get_seed", None)
         if get_seed is None:
             return
         try:
             archive = await get_seed()
-        except AuthenticationError:
+        except (AuthenticationError, AccountChangedError):
             raise
         except BabyTrackerError as err:
             log = _LOGGER.debug if self._seed_failed else _LOGGER.warning
             log("Couldn't download the account's seed; trying again next sync: %s", err)
             self._seed_failed = True
             return
+        self._check_account(source)  # never merge a seed from a different sync group
         if archive:
             try:
                 seed = await asyncio.to_thread(read_seed, archive)

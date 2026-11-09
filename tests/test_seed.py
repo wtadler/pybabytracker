@@ -5,11 +5,14 @@ from __future__ import annotations
 import io
 import sqlite3
 import zipfile
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import aiohttp
 import pytest
+from conftest import PROBE_UUID
 from factories import encode_b64
 from fake_server import FakeSyncServer
 
@@ -17,6 +20,7 @@ from pybabytracker import (
     OP_ADD,
     OP_DELETE,
     OP_UPDATE,
+    AccountChangedError,
     AuthenticationError,
     Baby,
     BabyTrackerClient,
@@ -337,8 +341,8 @@ def test_an_older_schema_without_later_columns_keeps_its_rows() -> None:
     pump: dict[str, Any] = {"FinishSide": 2, "Sides": 0, "Amount": 5, "IsEnglishScale": 1}
     rows = {"Baby": [baby_row()], "Pump": [activity(1, BabyID=None, **pump)]}
     rows["Diaper"] = [activity(2, Status=1)]
-    connection = connection_for(rows, old_tables)
-    seed = read_seed(archive(connection.serialize()))
+    with closing(connection_for(rows, old_tables)) as connection:
+        seed = read_seed(archive(connection.serialize()))
 
     old_pump = only(seed, Pump)
     assert (old_pump.finish_side, old_pump.left_duration) == (2, 0)
@@ -395,9 +399,10 @@ def test_a_column_the_schema_computes_is_never_read() -> None:
         '"Note" BLOB GENERATED ALWAYS AS (zeroblob(50000000)) VIRTUAL)'
     )
     rows = {"Baby": [baby_row()], "Diaper": [activity(1, Status=0, Note=None)]}
-    connection = connection_for(rows, {"Diaper": hostile})
+    with closing(connection_for(rows, {"Diaper": hostile})) as connection:
+        data = connection.serialize()
 
-    assert only(read_seed(archive(connection.serialize())), Diaper).note == ""
+    assert only(read_seed(archive(data)), Diaper).note == ""
 
 
 def test_a_stored_value_over_the_limit_raises_protocol_error(
@@ -738,3 +743,87 @@ async def test_a_failed_seed_download_through_the_client_still_syncs_the_logs(
     await engine.sync(client)
 
     assert engine.to_dict()["seeded"] is False
+
+
+# --- a different sync group --------------------------------------------------------------------
+
+
+async def synced_before_seeds(client: BabyTrackerClient, fake_server: FakeSyncServer) -> SyncEngine:
+    """State synced from group 424242, saved before seeds were read."""
+    fake_server.add_device(DEVICE)
+    fake_server.add_transaction(
+        DEVICE, OP_ADD, payload(only(seeded(Diaper=[activity(1, Status=0)]), Diaper))
+    )
+    engine = SyncEngine()
+    await engine.sync(client)
+    state = engine.to_dict()
+    state["seeded"] = False
+    return SyncEngine.from_dict(state)
+
+
+async def test_a_reset_during_the_seed_download_merges_nothing(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    engine = await synced_before_seeds(client, fake_server)
+    fake_server.seed = seed_zip(Sleep=[activity(2, Duration=30)])
+    fake_server.add_transaction(
+        DEVICE, OP_ADD, payload(only(seeded(Diaper=[activity(3, Status=1)]), Diaper))
+    )
+    fake_server.reset_on_request = ("GET", "/account/seed", 777)
+
+    with pytest.raises(AccountChangedError):
+        await engine.sync(client)
+
+    assert rid(1) in engine.records
+    assert rid(2) not in engine.records
+    assert rid(3) not in engine.records
+    assert engine.to_dict()["seeded"] is False
+    assert engine.account_id == 424242
+
+
+async def test_a_seed_from_a_different_group_is_not_merged(
+    client: BabyTrackerClient, fake_server: FakeSyncServer, session: aiohttp.ClientSession
+) -> None:
+    engine = await synced_before_seeds(client, fake_server)
+    fake_server.account_id = 777
+    fake_server.sessions.clear()
+    fake_server.seed = seed_zip(Sleep=[activity(2, Duration=30)])
+    fresh = BabyTrackerClient(
+        fake_server.email, fake_server.password, PROBE_UUID, "Test Device",
+        session=session, base_url=fake_server.base_url,
+    )  # fmt: skip
+
+    with pytest.raises(AccountChangedError):
+        await engine.sync(fresh)
+
+    assert rid(1) in engine.records
+    assert rid(2) not in engine.records
+    assert rid(3) not in engine.records
+    assert engine.to_dict()["seeded"] is False
+    assert engine.account_id == 424242
+
+
+async def test_the_first_seed_read_adopts_the_groups_account_id(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    fake_server.seed = seed_zip(Sleep=[activity(2, Duration=30)])
+    engine = SyncEngine()
+
+    await engine.sync(client)
+
+    assert rid(2) in engine.records
+    assert engine.account_id == 424242
+
+
+async def test_a_group_change_on_the_seed_download_fails_the_sync(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    source = SeedSource(seed_zip(Sleep=[activity(2, Duration=30)]))
+    source.fail = AccountChangedError(424242, 777)
+    engine = SyncEngine()
+
+    with pytest.raises(AccountChangedError):
+        await engine.sync(source)
+
+    assert engine.to_dict()["seeded"] is False
+    assert "Couldn't download the account's seed" not in caplog.text
