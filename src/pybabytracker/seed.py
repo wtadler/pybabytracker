@@ -25,7 +25,8 @@ from .times import format_time
 _LOGGER = logging.getLogger(__name__)
 
 SEED_DATABASE = "EasyLog.db"
-MAX_SEED_DATABASE_BYTES = 500 * 1024 * 1024
+# A real seed is a few MB; the cap keeps a damaged or hostile one off small hardware.
+MAX_SEED_DATABASE_BYTES = 64 * 1024 * 1024
 # The longest text or blob a seed's database may give back. Rows are records and pick-list
 # entries, so anything near this is damage, not data.
 _MAX_VALUE_BYTES = 10 * 1024 * 1024
@@ -63,6 +64,8 @@ def read_seed(archive: bytes) -> Seed:
     try:
         database = _database_bytes(archive)
         connection = sqlite3.connect(":memory:")
+        # Text that isn't valid UTF-8 is read with replacement characters, not as a failure.
+        connection.text_factory = _lenient_text
         try:
             _lock_down(connection)
             connection.deserialize(_rollback_journal(database))
@@ -101,13 +104,17 @@ def _lock_down(connection: sqlite3.Connection) -> None:
     connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, _MAX_VALUE_BYTES)
 
 
-def _rollback_journal(database: bytes) -> bytes:
+def _lenient_text(raw: bytes) -> str:
+    return raw.decode("utf-8", "replace")
+
+
+def _rollback_journal(database: bytes) -> bytes | bytearray:
     """The database marked as using a rollback journal. A database saved in WAL mode can't be
     opened from memory otherwise, and a seed has no WAL file to go with it anyway."""
     if len(database) >= 20 and (database[18] == 2 or database[19] == 2):
         patched = bytearray(database)
         patched[18] = patched[19] = 1
-        return bytes(patched)
+        return patched  # no second copy: SQLite reads a bytearray as well
     return database
 
 
@@ -356,6 +363,10 @@ def _bottle(_r: _Reader, row: Row) -> dict[str, Any]:
     return {"amount": _volume(row)} | _ids(row, ("descID", "DescID"))
 
 
+def _pumped(r: _Reader, row: Row) -> dict[str, Any]:
+    return _bottle(r, row) | _ids(row, ("pumpID", "PumpID"))
+
+
 def _other_feed(r: _Reader, row: Row) -> dict[str, Any]:
     payload: dict[str, Any] = {"unit": _text(row["Unit"])}
     if _number(row["Amount"]) > 0:
@@ -483,7 +494,7 @@ _TABLES: dict[str, _Table] = {
         "DescID",
     ),
     "Formula": _table("Formula", _bottle, "Amount", "IsEnglishScale", "DescID"),
-    "Pumped": _table("Pumped", _bottle, "Amount", "IsEnglishScale", "DescID"),
+    "Pumped": _table("Pumped", _pumped, "Amount", "IsEnglishScale", "DescID", "PumpID"),
     "OtherFeed": _table(
         "OtherFeed", _other_feed, "TypeID", "DescID", "Amount", "IsEnglishScale", "Unit"
     ),

@@ -21,6 +21,7 @@ from pybabytracker import (
     OP_DELETE,
     OP_UPDATE,
     AccountChangedError,
+    Allergen,
     AuthenticationError,
     Baby,
     BabyTrackerClient,
@@ -28,8 +29,13 @@ from pybabytracker import (
     Bath,
     Device,
     Diaper,
+    DoctorVisit,
+    DownloadRefusedError,
     Formula,
     Growth,
+    HealthQuestion,
+    Journal,
+    Joy,
     Medication,
     Milestone,
     Nursing,
@@ -37,9 +43,11 @@ from pybabytracker import (
     OtherFeed,
     ProtocolError,
     Pump,
+    Pumped,
     RawTransaction,
     Record,
     Seed,
+    Sick,
     Sleep,
     SyncEngine,
     Temperature,
@@ -47,6 +55,7 @@ from pybabytracker import (
     read_seed,
 )
 from pybabytracker import client as client_module
+from pybabytracker import engine as engine_module
 from pybabytracker import seed as seed_module
 
 SCHEMA = (Path(__file__).parent / "fixtures" / "seed_schema.sql").read_text(encoding="utf-8")
@@ -98,7 +107,7 @@ def archive(data: bytes, name: str = "EasyLog.db") -> bytes:
 
 
 def baby_row(**overrides: Any) -> dict[str, Any]:
-    row = {"ID": BABY, "Timestamp": T0, "Name": "Ada", "DOB": T0 - 86400 * 90}
+    row = {"ID": BABY, "Timestamp": T0, "Name": "Homer", "DOB": T0 - 86400 * 90}
     return row | {"DueDay": T0 - 86400 * 80, "Gender": 1, "Picture": "PHOTO-1"} | overrides
 
 
@@ -134,18 +143,18 @@ def test_a_seed_record_reads_like_the_synced_record() -> None:
     assert diaper.timestamp == datetime(2025, 6, 1, 12, 0, 5, tzinfo=UTC)
     assert (diaper.status, diaper.amount, diaper.poo_color, diaper.note) == (2, 3, 1, "note 1")
     assert diaper.baby_id == BABY
-    assert diaper.baby is not None and diaper.baby.name == "Ada"
+    assert diaper.baby is not None and diaper.baby.name == "Homer"
 
 
 def test_the_baby_is_a_record_and_embedded_in_each_of_its_records() -> None:
     seed = seeded(Sleep=[activity(1, Duration=45)])
 
     baby = only(seed, Baby)
-    assert (baby.name, baby.gender, baby.picture_file) == ("Ada", "true", "PHOTO-1.jpg")
+    assert (baby.name, baby.gender, baby.picture_file) == ("Homer", "true", "PHOTO-1.jpg")
     assert baby.dob == "2025-03-03 12:00:00 +0000"
     embedded = only(seed, Sleep).baby
     assert embedded is not None
-    assert (embedded.object_id, embedded.name, embedded.dob) == (BABY, "Ada", baby.dob)
+    assert (embedded.object_id, embedded.name, embedded.dob) == (BABY, "Homer", baby.dob)
 
 
 def test_a_date_of_zero_is_unset() -> None:
@@ -166,13 +175,62 @@ def test_a_nursing_keeps_its_sides_and_minutes() -> None:
     assert nursing.desc_id is None
 
 
+@pytest.mark.parametrize("kind", [Formula, Pumped])
 @pytest.mark.parametrize(("english", "unit"), [(1, "oz"), (0, "ml")])
-def test_a_bottle_amount_becomes_a_volume_measure(english: int, unit: str) -> None:
-    seed = seeded(Formula=[activity(1, Amount=4.5, IsEnglishScale=english)])
+def test_a_bottle_amount_becomes_a_volume_measure(
+    kind: type[Formula | Pumped], english: int, unit: str
+) -> None:
+    seed = seeded(**{kind.__name__: [activity(1, Amount=4.5, IsEnglishScale=english)]})
 
-    volume = only(seed, Formula).volume
+    volume = only(seed, kind).volume
     assert volume is not None
     assert (volume.value, volume.unit) == (4.5, unit)
+
+
+def test_a_pumped_bottle_keeps_its_description_and_its_pump() -> None:
+    seed = seeded(Pumped=[activity(1, Amount=3, IsEnglishScale=1, DescID="DESC-1", PumpID=rid(9))])
+
+    pumped = only(seed, Pumped)
+    assert (pumped.desc_id, pumped.pump_id, pumped.baby_id) == ("DESC-1", rid(9), BABY)
+
+
+@pytest.mark.parametrize("kind", [Joy, Journal])
+def test_a_joy_and_a_journal_entry_keep_their_note(kind: type[Joy | Journal]) -> None:
+    seed = seeded(**{kind.__name__: [activity(1, Note="first smile")]})
+
+    entry = only(seed, kind)
+    assert (entry.object_id, entry.note, entry.baby_id) == (rid(1), "first smile", BABY)
+    assert entry.time == datetime(2025, 6, 1, 12, 0, tzinfo=UTC)
+
+
+def test_a_sickness_keeps_its_symptom() -> None:
+    assert only(seeded(Sick=[activity(1, Symptom="Cough")]), Sick).symptom == "Cough"
+
+
+def test_an_allergen_keeps_its_source_reaction_and_severity() -> None:
+    row = activity(1, SourceID="SRC-1", Reaction="Rash", Severity=2, NotSure=1)
+
+    allergen = only(seeded(Allergen=[row]), Allergen)
+    assert (allergen.source_id, allergen.reaction) == ("SRC-1", "Rash")
+    assert (allergen.severity, allergen.not_sure) == (2, 1)
+
+
+def test_a_health_question_keeps_its_answer_and_its_visit() -> None:
+    row = activity(1, Question="Sleeping enough?", Answer="Yes", DoctorVisitID=rid(5))
+
+    question = only(seeded(HealthQuestion=[row]), HealthQuestion)
+    assert (question.question, question.answer) == ("Sleeping enough?", "Yes")
+    assert question.doctor_visit_id == rid(5)
+
+
+def test_a_doctor_visit_keeps_its_fields() -> None:
+    row = activity(1, IsAppointment=1, VisitType=2, DoctorID="DOC-1", DoctorNote="All good")
+    row |= {"Symptom": "Fever", "GrowthID": rid(6), "SickID": rid(7)}
+
+    visit = only(seeded(DoctorVisit=[row]), DoctorVisit)
+    assert (visit.is_appointment, visit.visit_type, visit.doctor_id) == (1, 2, "DOC-1")
+    assert (visit.doctor_note, visit.symptom) == ("All good", "Fever")
+    assert (visit.growth_id, visit.sick_id) == (rid(6), rid(7))
 
 
 def test_a_pump_keeps_both_sides_and_only_a_real_label() -> None:
@@ -414,6 +472,29 @@ def test_a_stored_value_over_the_limit_raises_protocol_error(
         read_seed(archive(data))
 
 
+def test_text_that_is_not_utf8_keeps_the_rest_of_the_seed() -> None:
+    with closing(
+        connection_for(
+            {"Baby": [baby_row()], "Diaper": [activity(1, Status=0), activity(2, 5, Status=1)]}
+        )
+    ) as connection:
+        connection.execute("UPDATE Diaper SET Note = CAST(X'C3' AS TEXT) WHERE ID = ?", (rid(1),))
+        connection.commit()
+        data = connection.serialize()
+
+    diapers = {r.object_id: r for r in read_seed(archive(data)).records if isinstance(r, Diaper)}
+    assert set(diapers) == {rid(1), rid(2)}
+    assert diapers[rid(1)].note == "\ufffd"
+    assert diapers[rid(2)].note == "note 2"
+
+
+def test_a_database_over_64_mib_is_refused_before_it_is_unpacked() -> None:
+    big = archive(b"\0" * (64 * 1024 * 1024 + 1))
+
+    with pytest.raises(ProtocolError, match="over"):
+        read_seed(big)
+
+
 def test_a_database_over_the_cap_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(seed_module, "MAX_SEED_DATABASE_BYTES", 1000)
     with pytest.raises(ProtocolError):
@@ -625,7 +706,7 @@ async def test_a_failed_download_lets_the_logs_sync_and_is_tried_again(
 
     result = await engine.sync(source)
     assert rid(1) in engine.records
-    assert engine.to_dict()["seeded"] is False
+    assert engine.to_dict()["seeded"] == 0
     assert result.seed_read is False
     await engine.sync(source)
     source.fail = None
@@ -647,7 +728,7 @@ async def test_a_rejected_sign_in_on_the_seed_fails_the_sync() -> None:
 async def test_a_source_without_a_seed_syncs_and_reads_one_later() -> None:
     engine = SyncEngine()
     await engine.sync(LogsOnly())
-    assert engine.to_dict()["seeded"] is False
+    assert engine.to_dict()["seeded"] == 0
 
     source = SeedSource(seed_zip(Diaper=[activity(1, Status=0)]))
     await engine.sync(source)
@@ -742,7 +823,7 @@ async def test_a_failed_seed_download_through_the_client_still_syncs_the_logs(
 
     await engine.sync(client)
 
-    assert engine.to_dict()["seeded"] is False
+    assert engine.to_dict()["seeded"] == 0
 
 
 # --- a different sync group --------------------------------------------------------------------
@@ -777,7 +858,7 @@ async def test_a_reset_during_the_seed_download_merges_nothing(
     assert rid(1) in engine.records
     assert rid(2) not in engine.records
     assert rid(3) not in engine.records
-    assert engine.to_dict()["seeded"] is False
+    assert engine.to_dict()["seeded"] == 0
     assert engine.account_id == 424242
 
 
@@ -799,7 +880,7 @@ async def test_a_seed_from_a_different_group_is_not_merged(
     assert rid(1) in engine.records
     assert rid(2) not in engine.records
     assert rid(3) not in engine.records
-    assert engine.to_dict()["seeded"] is False
+    assert engine.to_dict()["seeded"] == 0
     assert engine.account_id == 424242
 
 
@@ -825,5 +906,106 @@ async def test_a_group_change_on_the_seed_download_fails_the_sync(
     with pytest.raises(AccountChangedError):
         await engine.sync(source)
 
-    assert engine.to_dict()["seeded"] is False
+    assert engine.to_dict()["seeded"] == 0
     assert "Couldn't download the account's seed" not in caplog.text
+
+
+# --- the seed's format version -----------------------------------------------------------------
+
+
+async def test_the_saved_state_names_the_seed_format_it_was_read_at() -> None:
+    engine = SyncEngine()
+    assert engine.seeded is False
+
+    await engine.sync(SeedSource(seed_zip()))
+
+    assert engine.seeded is True
+    saved = engine.to_dict()["seeded"]
+    assert type(saved) is int and saved == engine_module.SEED_FORMAT == 1
+
+
+async def test_state_saved_with_seeded_true_counts_as_format_1() -> None:
+    state = SyncEngine().to_dict()
+    state["seeded"] = True
+    source = SeedSource(seed_zip())
+
+    engine = SyncEngine.from_dict(state)
+    await engine.sync(source)
+
+    assert engine.seeded is True
+    assert source.seed_reads == 0
+    assert engine.to_dict()["seeded"] == 1
+
+
+async def test_a_newer_seed_format_reads_the_seed_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    source = SeedSource(seed_zip(Sleep=[activity(2, Duration=30)]))
+    engine = SyncEngine()
+    await engine.sync(source)
+    state = engine.to_dict()
+
+    monkeypatch.setattr(engine_module, "SEED_FORMAT", 2)
+    restored = SyncEngine.from_dict(state)
+    assert restored.seeded is False
+    result = await restored.sync(source)
+
+    assert result.seed_read is True
+    assert source.seed_reads == 2
+    assert restored.to_dict()["seeded"] == 2
+
+
+async def test_a_refused_download_is_warned_about_and_not_tried_again(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    source = SeedSource(seed_zip(Sleep=[activity(2, Duration=30)]))
+    source.fail = DownloadRefusedError("the service redirected the seed request (HTTP 302)")
+    engine = SyncEngine()
+
+    result = await engine.sync(source)
+    await engine.sync(source)
+
+    assert result.seed_read is True
+    assert engine.seeded is True
+    assert source.seed_reads == 1
+    assert "older history is missing" in caplog.text
+
+
+async def test_a_redirected_seed_through_the_client_is_not_tried_again(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    fake_server.seed_redirect = "/elsewhere/seed.zip"
+    engine = SyncEngine()
+
+    await engine.sync(client)
+    await engine.sync(client)
+
+    assert engine.seeded is True
+    assert len(fake_server.calls("GET", "/account/seed")) == 1
+
+
+async def test_a_seed_over_the_download_cap_is_not_tried_again(
+    client: BabyTrackerClient, fake_server: FakeSyncServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(client_module, "MAX_SEED_BYTES", 1000)
+    fake_server.seed = b"x" * 1001
+    engine = SyncEngine()
+
+    await engine.sync(client)
+    await engine.sync(client)
+
+    assert engine.seeded is True
+    assert len(fake_server.calls("GET", "/account/seed")) == 1
+
+
+async def test_a_seed_loaded_before_a_failed_sync_is_marked_read() -> None:
+    """The caller can tell the seed was read, and save it, even when the sync then fails."""
+
+    class FailingLogs(SeedSource):
+        async def get_devices(self) -> list[Device]:
+            raise BabyTrackerConnectionError("down")
+
+    engine = SyncEngine()
+    with pytest.raises(BabyTrackerConnectionError):
+        await engine.sync(FailingLogs(seed_zip(Sleep=[activity(2, Duration=30)])))
+
+    assert engine.seeded is True
+    assert rid(2) in engine.records

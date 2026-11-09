@@ -19,6 +19,7 @@ from .exceptions import (
     AccountChangedError,
     AuthenticationError,
     BabyTrackerConnectionError,
+    DownloadRefusedError,
     NoResponseError,
     ProtocolError,
 )
@@ -224,7 +225,8 @@ class BabyTrackerClient:
         file it doesn't have (seen for a photo's ".mp4" name), and ``404`` is expected, not yet
         seen, so both mean no file. Any other error status raises, as for the other calls.
 
-        A redirect raises ``ProtocolError`` and is not followed, and so does a body over
+        A redirect raises ``DownloadRefusedError`` (a ``ProtocolError``) and is not followed, and
+        so does a body over
         ``MAX_PICTURE_BYTES``. A name that is empty, only whitespace, not a string, or has a path
         separator raises ``ValueError`` without a request: names come from other devices' records.
         """
@@ -235,7 +237,9 @@ class BabyTrackerClient:
             lambda: self._send_bytes(path, MAX_PICTURE_BYTES), allow=(400, 404)
         )
         if 300 <= status < 400:
-            raise ProtocolError(f"the service redirected the picture request (HTTP {status})")
+            raise DownloadRefusedError(
+                f"the service redirected the picture request (HTTP {status})"
+            )
         return None if status in (400, 404) else content
 
     async def get_seed(self) -> bytes | None:
@@ -246,7 +250,8 @@ class BabyTrackerClient:
         ``SyncEngine.sync`` do this). Returns ``None`` when the account has no seed: an empty
         body, or a ``400`` or ``404`` (expected, not yet seen).
 
-        A redirect raises ``ProtocolError`` and is not followed, and so does a body over
+        A redirect raises ``DownloadRefusedError`` (a ``ProtocolError``) and is not followed, and
+        so does a body over
         ``MAX_SEED_BYTES``. The download may take up to ``SEED_TIMEOUT`` seconds in all, but fails
         if the service goes quiet for the client's usual request timeout.
         """
@@ -255,7 +260,7 @@ class BabyTrackerClient:
             lambda: self._send_bytes("/account/seed", MAX_SEED_BYTES, limits), allow=(400, 404)
         )
         if 300 <= status < 400:
-            raise ProtocolError(f"the service redirected the seed request (HTTP {status})")
+            raise DownloadRefusedError(f"the service redirected the seed request (HTTP {status})")
         return content if status not in (400, 404) and content else None
 
     async def _request(
@@ -338,19 +343,19 @@ class BabyTrackerClient:
 
 
 async def _read_capped(response: aiohttp.ClientResponse, *, cap: int) -> bytes:
-    """The body of ``response``, or ``ProtocolError`` when it's over ``cap`` bytes.
+    """The body of ``response``, or ``DownloadRefusedError`` when it's over ``cap`` bytes.
 
     A redirect or an error status has its body skipped, since only the status is used.
     """
     if response.status >= 300:
         return b""
     if response.content_length is not None and response.content_length > cap:
-        raise ProtocolError(f"the download is larger than {cap} bytes")
+        raise DownloadRefusedError(f"the download is larger than {cap} bytes")
     body = bytearray()
     async for chunk in response.content.iter_chunked(64 * 1024):
         body += chunk
         if len(body) > cap:
-            raise ProtocolError(f"the download is larger than {cap} bytes")
+            raise DownloadRefusedError(f"the download is larger than {cap} bytes")
     return bytes(body)
 
 

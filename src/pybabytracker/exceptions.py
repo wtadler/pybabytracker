@@ -25,6 +25,10 @@ class ProtocolError(BabyTrackerError):
     """The service answered, but not in the shape PROTOCOL.md describes."""
 
 
+class DownloadRefusedError(ProtocolError):
+    """A download this library won't take: a redirect, or a body over its size cap."""
+
+
 class AccountChangedError(BabyTrackerError):
     """A sign-in opened a different sync group (``AccountID``) from the one already in use.
 

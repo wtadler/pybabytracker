@@ -237,10 +237,15 @@ no device: a log copy of a record wins unless its timestamp is older, and a dele
 removes it. Every log is still read from the start, as the app does after loading a seed.
 
 `SyncResult.seed_read` is true for the sync that read the seed (or learned there is none), so save
-the state after it even when no log entry was applied. A download that fails is warned about once
-and tried again on the next sync, while the logs keep syncing. A seed that can't be read is warned
-about and skipped for good. Pick-list entries in the seed aren't records of their own; the records
-that use them carry them, as synced records do.
+the state after it even when no log entry was applied. `SyncEngine.seeded` turns true as soon as
+the seed is read, even in a sync that then fails, so a caller can save when it changes. A download
+that fails is warned about once and tried again on the next sync, while the logs keep syncing. A
+seed that can't be read, or that the client refuses (`DownloadRefusedError`: a redirect, or over
+the size cap), is warned about and skipped. Saved state records the seed format it was read at
+(`seeded: 1`; `true` from earlier versions counts as 1), and a library with a newer
+`SEED_FORMAT` reads the seed again. Text that isn't valid UTF-8 is read with replacement
+characters. Pick-list entries in the seed aren't records of their own; the records that use them
+carry them, as synced records do.
 
 ## Command line
 
