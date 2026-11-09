@@ -3,8 +3,7 @@
 The transaction logs don't hold the whole history. Records from devices that have since left
 the account are only in the seed, so a first sync reads it before the logs. The seed stores
 records as table rows, not as the payloads the apps sync, so each row is turned into the payload
-its record would sync as and decoded like one. Records the logs also hold come back with a newer
-version there, so the logs win.
+its record would sync as and decoded like one.
 """
 
 from __future__ import annotations
@@ -13,8 +12,9 @@ import io
 import logging
 import sqlite3
 import zipfile
-from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass, field
+import zlib
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -26,74 +26,89 @@ _LOGGER = logging.getLogger(__name__)
 
 SEED_DATABASE = "EasyLog.db"
 MAX_SEED_DATABASE_BYTES = 500 * 1024 * 1024
-# Built-in pick-list entries every app ships. They never sync, so they aren't records.
-_BUILT_IN_PREFIX = "EasyLogSeed"
+# The longest text or blob a seed's database may give back. Rows are records and pick-list
+# entries, so anything near this is damage, not data.
+_MAX_VALUE_BYTES = 10 * 1024 * 1024
+_EPOCH = "1970-01-01 00:00:00 +0000"
+# What a broken zip or database can raise while it is read.
+_UNREADABLE = (
+    sqlite3.Error,
+    zipfile.BadZipFile,
+    zlib.error,
+    EOFError,
+    OSError,
+    NotImplementedError,
+    RuntimeError,
+)
 
-Row = sqlite3.Row
+# A row: every column asked for, None for one the table doesn't have.
+Row = dict[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
 class Seed:
-    """What a seed holds.
-
-    ``records`` are the seed's records, decoded as if synced. ``merged`` is how far into each
-    device's log the copy goes, as ``{device_uuid: sync_id}``: a log is read from there.
-    """
+    """The seed's records, decoded as if synced."""
 
     records: tuple[Record, ...] = ()
-    merged: Mapping[str, int] = field(default_factory=dict)
 
 
 def read_seed(archive: bytes) -> Seed:
-    """Decode a seed zip from ``BabyTrackerClient.get_seed``. No I/O; blocking, so run it in an
-    executor from async code.
+    """Decode a seed zip from ``BabyTrackerClient.get_seed``. No I/O, but it blocks, so run it in
+    an executor from async code.
 
-    A zip without the database, or a database that isn't one, raises ``ProtocolError``. A row
-    that can't be decoded is skipped with a warning, as an undecodable log entry is.
+    A zip without the database, or a zip or database that can't be read, raises
+    ``ProtocolError``. A row that can't be decoded is skipped with a warning, as an undecodable
+    log entry is. Only the columns the records need are read, so photo thumbnails stay on disk.
     """
-    database = _database_bytes(archive)
-    connection = sqlite3.connect(":memory:")
     try:
+        database = _database_bytes(archive)
+        connection = sqlite3.connect(":memory:")
         try:
-            connection.deserialize(database)
-            connection.row_factory = sqlite3.Row
-            tables = _tables(connection)
-        except sqlite3.DatabaseError as err:
-            raise ProtocolError(f"the seed's database can't be read: {err}") from err
-        reader = _Reader(connection, tables)
-        return Seed(tuple(reader.records()), reader.merged())
-    finally:
-        connection.close()
+            _lock_down(connection)
+            connection.deserialize(_rollback_journal(database))
+            records = tuple(_Reader(connection).records())
+        finally:
+            connection.close()
+    except ProtocolError:
+        raise
+    except _UNREADABLE as err:
+        raise ProtocolError(f"the seed can't be read: {err!r}") from err
+    return Seed(records)
 
 
 def _database_bytes(archive: bytes) -> bytes:
     try:
-        with zipfile.ZipFile(io.BytesIO(archive)) as zipped:
-            entries = [
-                i for i in zipped.infolist() if i.filename.rsplit("/", 1)[-1] == SEED_DATABASE
-            ]
-            if not entries:
-                raise ProtocolError(f"the seed has no {SEED_DATABASE}")
-            entry = entries[0]
-            if entry.file_size > MAX_SEED_DATABASE_BYTES:
-                raise ProtocolError(
-                    f"the seed's database is larger than {MAX_SEED_DATABASE_BYTES} bytes"
-                )
-            with zipped.open(entry) as source:
-                data = source.read(MAX_SEED_DATABASE_BYTES + 1)
+        zipped = zipfile.ZipFile(io.BytesIO(archive))
     except zipfile.BadZipFile as err:
         raise ProtocolError(f"the seed isn't a zip: {err}") from err
+    with zipped:
+        entries = [i for i in zipped.infolist() if i.filename.rsplit("/", 1)[-1] == SEED_DATABASE]
+        if not entries:
+            raise ProtocolError(f"the seed has no {SEED_DATABASE}")
+        if entries[0].file_size > MAX_SEED_DATABASE_BYTES:
+            raise ProtocolError(f"the seed's database is over {MAX_SEED_DATABASE_BYTES} bytes")
+        with zipped.open(entries[0]) as source:
+            data = source.read(MAX_SEED_DATABASE_BYTES + 1)
     if len(data) > MAX_SEED_DATABASE_BYTES:
-        raise ProtocolError(f"the seed's database is larger than {MAX_SEED_DATABASE_BYTES} bytes")
+        raise ProtocolError(f"the seed's database is over {MAX_SEED_DATABASE_BYTES} bytes")
     return data
 
 
-def _tables(connection: sqlite3.Connection) -> dict[str, set[str]]:
-    names = [r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")]
-    return {
-        name: {r[1] for r in connection.execute(f"PRAGMA table_info({_quote(name)})")}
-        for name in names
-    }
+def _lock_down(connection: sqlite3.Connection) -> None:
+    """Treat the database as untrusted: no schema-defined code, and no huge values."""
+    connection.setconfig(sqlite3.SQLITE_DBCONFIG_DEFENSIVE, True)
+    connection.setconfig(sqlite3.SQLITE_DBCONFIG_TRUSTED_SCHEMA, False)
+    connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, _MAX_VALUE_BYTES)
+
+
+def _rollback_journal(database: bytes) -> bytes:
+    """The database marked as using a rollback journal. A database saved in WAL mode can't be
+    opened from memory otherwise, and a seed has no WAL file to go with it anyway."""
+    if len(database) >= 20 and (database[18] == 2 or database[19] == 2):
+        patched = bytearray(database)
+        patched[18] = patched[19] = 1
+        return bytes(patched)
+    return database
 
 
 def _quote(name: str) -> str:
@@ -101,18 +116,14 @@ def _quote(name: str) -> str:
 
 
 def _time(value: Any) -> str | None:
-    """A database time (Unix seconds) as a payload time, or ``None`` when it's unset."""
-    if value is None or isinstance(value, bool) or not isinstance(value, int | float):
+    """A database time (Unix seconds) as a payload time, or ``None`` when it's unset (the app
+    writes 0 for a date it doesn't have)."""
+    if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
         return None
     try:
         return format_time(datetime.fromtimestamp(float(value), UTC))
     except (OverflowError, OSError, ValueError):
         return None
-
-
-def _stamp(value: Any) -> str:
-    """A write time; an unset one is the epoch, as embedded objects carry it."""
-    return _time(value) or "1970-01-01 00:00:00 +0000"
 
 
 def _flag(value: Any) -> str:
@@ -123,9 +134,9 @@ def _text(value: Any) -> str:
     return value if isinstance(value, str) else ""
 
 
-def _number(value: Any) -> float | int:
+def _number(value: Any, default: int = 0) -> float | int:
     if isinstance(value, bool) or not isinstance(value, int | float):
-        return 0
+        return default
     return int(value) if float(value).is_integer() else float(value)
 
 
@@ -133,134 +144,142 @@ def _measure(kind: str, value: Any, english: Any) -> dict[str, Any]:
     return {"BCObjectType": kind, "englishMeasure": _flag(english), "value": _number(value)}
 
 
+@dataclass(frozen=True, slots=True)
+class _Table:
+    record_type: str
+    columns: tuple[str, ...]
+    build: Callable[[_Reader, Row], dict[str, Any]]
+
+
+# Columns every record table has. Pump has no BabyID: pumping belongs to the account.
+_ACTIVITY_COLUMNS = ("ID", "Timestamp", "Time", "Note", "BabyID")
+_SELECTION_COLUMNS = ("ID", "Timestamp", "Name", "Description")
+
+
 class _Reader:
-    def __init__(self, connection: sqlite3.Connection, tables: dict[str, set[str]]) -> None:
+    def __init__(self, connection: sqlite3.Connection) -> None:
         self._db = connection
-        self._tables = tables
-        self._babies = {r["ID"]: self._baby(r) for r in self._rows("Baby")}
+        listed = connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        self._tables = {
+            name: {r[1] for r in connection.execute(f"PRAGMA table_info({_quote(name)})")}
+            for (name,) in listed.fetchall()
+        }
+        baby_columns = ("ID", "Timestamp", "Name", "DOB", "DueDay", "Gender", "Picture")
+        self._baby_rows = list(self._select("Baby", baby_columns))
+        self._babies = {row["ID"]: self._baby(row) for row in self._baby_rows}
         self._pictures: dict[str, list[dict[str, Any]]] = {}
-        for row in self._rows("Picture"):
-            self._pictures.setdefault(_text(row["ActivityID"]), []).append(self._picture(row))
+        picture_columns = ("ID", "Timestamp", "ActivityID", "Type", "FileName")
+        for row in self._select("Picture", picture_columns):
+            if isinstance(row["ActivityID"], str) and row["FileName"]:
+                self._pictures.setdefault(row["ActivityID"], []).append(self._picture(row))
         self._selections: dict[str, dict[str, dict[str, Any]]] = {}
 
-    def _rows(self, table: str) -> Iterator[sqlite3.Row]:
-        if table not in self._tables:
-            return iter(())
-        return iter(self._db.execute(f"SELECT * FROM {_quote(table)}"))
-
-    def _col(self, row: sqlite3.Row, name: str) -> Any:
-        # ``in row`` would look through the values, not the column names.
-        return row[name] if name in row.keys() else None  # noqa: SIM118
-
-    def merged(self) -> dict[str, int]:
-        merged: dict[str, int] = {}
-        for row in self._rows("MergedTransaction"):
-            device, sync_id = row["DeviceID"], row["SyncID"]
-            if isinstance(device, str) and device and isinstance(sync_id, int) and sync_id > 0:
-                merged[device] = sync_id
-        return merged
+    def _select(self, table: str, columns: tuple[str, ...]) -> Iterator[Row]:
+        """Each row of ``table`` with ``columns``; one the table lacks comes back as None. A
+        table without an ID column, or missing, has no rows."""
+        have = self._tables.get(table, set())
+        present = [c for c in columns if c in have]
+        if "ID" in columns and "ID" not in present:
+            return
+        sql = f"SELECT {', '.join(map(_quote, present))} FROM {_quote(table)}"
+        for values in self._db.execute(sql):
+            row = dict.fromkeys(columns)
+            row.update(zip(present, values, strict=True))
+            if "ID" not in row or (isinstance(row["ID"], str) and row["ID"]):
+                yield row
 
     def records(self) -> Iterator[Record]:
-        yield from self._babies_as_records()
-        for table, (record_type, build) in _SELECTIONS.items():
-            for row in self._rows(table):
-                if _text(row["ID"]).startswith(_BUILT_IN_PREFIX):
-                    continue
-                try:
-                    entry = {**self._selection(row), **build(row)}
-                except IndexError as err:  # a column this table doesn't have
-                    _LOGGER.warning("Skipping seed row %s in %s: %s", row["ID"], table, err)
-                    continue
-                yield from self._decode(table, row, entry, record_type)
-        for table, (record_type, activity) in _ACTIVITIES.items():
-            for row in self._rows(table):
+        for row in self._baby_rows:
+            baby = dict(self._babies[row["ID"]])
+            baby["timestamp"] = _time(row["Timestamp"]) or _EPOCH
+            yield from self._decode("Baby", row, baby)
+        for name, table in _TABLES.items():
+            for row in self._select(name, _ACTIVITY_COLUMNS + table.columns):
                 try:
                     payload = self._activity(row)
                     if payload is None:
                         continue
-                    payload.update(activity(self, row))
-                except IndexError as err:  # a column this table doesn't have
-                    _LOGGER.warning("Skipping seed row %s in %s: %s", row["ID"], table, err)
+                    payload.update(table.build(self, row))
+                except (LookupError, TypeError, ValueError) as err:
+                    _LOGGER.warning("Skipping seed row %s in %s: %r", row["ID"], name, err)
                     continue
-                yield from self._decode(table, row, payload, record_type)
+                payload["BCObjectType"] = table.record_type
+                yield from self._decode(name, row, payload)
 
-    def _decode(
-        self, table: str, row: sqlite3.Row, payload: dict[str, Any], record_type: str
-    ) -> Iterator[Record]:
-        payload["BCObjectType"] = record_type
+    def _decode(self, table: str, row: Row, payload: dict[str, Any]) -> Iterator[Record]:
         try:
             yield decode_payload(payload)
         except TransactionDecodeError as err:
             _LOGGER.warning("Skipping seed row %s in %s: %s", row["ID"], table, err)
 
-    def _babies_as_records(self) -> Iterator[Record]:
-        for row in self._rows("Baby"):
-            payload = dict(self._babies[row["ID"]])
-            payload["timestamp"] = _stamp(row["Timestamp"])
-            yield from self._decode("Baby", row, payload, "Baby")
-
-    def _baby(self, row: sqlite3.Row) -> dict[str, Any]:
+    def _baby(self, row: Row) -> dict[str, Any]:
         """A baby as records embed it."""
         baby: dict[str, Any] = {"BCObjectType": "Baby", "objectID": row["ID"]}
         baby["name"] = _text(row["Name"])
-        if (dob := _time(self._col(row, "DOB"))) is not None:
+        if (dob := _time(row["DOB"])) is not None:
             baby["dob"] = dob
-        if (due := _time(self._col(row, "DueDay"))) is not None:
+        if (due := _time(row["DueDay"])) is not None:
             baby["dueDay"] = due
-        baby["gender"] = _flag(self._col(row, "Gender"))
-        baby["pictureName"] = _text(self._col(row, "Picture"))
+        baby["gender"] = _flag(row["Gender"])
+        baby["pictureName"] = _text(row["Picture"])
         baby["newFlage"] = "false"
-        baby["timestamp"] = "1970-01-01 00:00:00 +0000"
+        baby["timestamp"] = _EPOCH
         return baby
 
-    def _picture(self, row: sqlite3.Row) -> dict[str, Any]:
+    def _picture(self, row: Row) -> dict[str, Any]:
         return {
             "objectID": row["ID"],
             "fileName": _text(row["FileName"]),
-            "mediaType": _number(self._col(row, "Type")),
+            "mediaType": _number(row["Type"]),
             "deleted": "false",
-            "timestamp": _stamp(row["Timestamp"]),
+            "timestamp": _time(row["Timestamp"]) or _EPOCH,
         }
 
-    def _selection(self, row: sqlite3.Row) -> dict[str, Any]:
-        return {
-            "objectID": row["ID"],
-            "name": _text(row["Name"]),
-            "desc": _text(self._col(row, "Description")),
-            "newFlage": "false",
-            "timestamp": _stamp(row["Timestamp"]),
-        }
-
-    def embedded(self, table: str, object_id: Any, kind: str) -> dict[str, Any] | None:
-        """A pick-list entry as records embed it, or ``None`` when it isn't in the seed."""
+    def entry(self, table: str, object_id: Any) -> dict[str, Any] | None:
+        """A pick-list entry's own fields, or ``None`` when the seed doesn't have it."""
         if not isinstance(object_id, str) or not object_id:
             return None
         if table not in self._selections:
-            self._selections[table] = {}
-            build = _SELECTIONS.get(table, ("", lambda _row: {}))[1]
-            for row in self._rows(table):
-                self._selections[table][row["ID"]] = {**self._selection(row), **build(row)}
-        entry = self._selections[table].get(object_id)
-        if entry is None:
-            return None
-        return {**entry, "BCObjectType": kind}
+            extra, build = _PICK_LISTS.get(table, ((), _nothing))
+            entries: dict[str, dict[str, Any]] = {}
+            for row in self._select(table, _SELECTION_COLUMNS + extra):
+                entries[row["ID"]] = {
+                    "objectID": row["ID"],
+                    "name": _text(row["Name"]),
+                    "desc": _text(row["Description"]),
+                    "newFlage": "false",
+                    "timestamp": _time(row["Timestamp"]) or _EPOCH,
+                    **build(row),
+                }
+            self._selections[table] = entries
+        return self._selections[table].get(object_id)
 
-    def _activity(self, row: sqlite3.Row) -> dict[str, Any] | None:
+    def embed(
+        self, payload: dict[str, Any], key: str, table: str, kind: str, object_id: Any, id_key: str
+    ) -> None:
+        """Embed a pick-list entry under ``key``, as synced records carry it. An entry the seed
+        doesn't have keeps its ID under ``id_key`` instead, so no nameless copy is invented."""
+        entry = self.entry(table, object_id)
+        if entry is not None:
+            payload[key] = {**entry, "BCObjectType": kind}
+        elif isinstance(object_id, str) and object_id:
+            payload[id_key] = object_id
+
+    def _activity(self, row: Row) -> dict[str, Any] | None:
         time = _time(row["Time"])
         if time is None:
             return None
         payload: dict[str, Any] = {
             "objectID": row["ID"],
             "time": time,
-            "timestamp": _stamp(row["Timestamp"]),
-            "note": _text(self._col(row, "Note")),
+            "timestamp": _time(row["Timestamp"]) or _EPOCH,
+            "note": _text(row["Note"]),
             "newFlage": "false",
             "pictureLoaded": "true",
             "pictureNote": list(self._pictures.get(row["ID"], [])),
         }
-        baby_id = self._col(row, "BabyID")
-        if baby_id is not None:
-            baby = self._babies.get(baby_id)
+        if row["BabyID"] is not None:
+            baby = self._babies.get(row["BabyID"])
             if baby is None:
                 # The app keeps no record of a baby that isn't in its database.
                 return None
@@ -268,7 +287,11 @@ class _Reader:
         return payload
 
 
-def _medication_selection(row: Row) -> dict[str, Any]:
+def _nothing(_row: Row) -> dict[str, Any]:
+    return {}
+
+
+def _medicine_entry(row: Row) -> dict[str, Any]:
     return {
         "amountPerTime": _number(row["AmountPerTime"]),
         "interval": _number(row["Interval"]),
@@ -277,67 +300,77 @@ def _medication_selection(row: Row) -> dict[str, Any]:
     }
 
 
-def _for_age(row: Row) -> dict[str, Any]:
-    return {"forAge": _number(row["ForAge"])} if row["ForAge"] is not None else {}
+def _age_entry(row: Row) -> dict[str, Any]:
+    entry: dict[str, Any] = {}
+    if row["ForAge"] is not None:
+        entry["forAge"] = _number(row["ForAge"])
+    if row.get("BabyID"):
+        entry["babyID"] = row["BabyID"]
+    return entry
 
 
-def _other_feed_selection(row: Row) -> dict[str, Any]:
+def _food_entry(row: Row) -> dict[str, Any]:
     return {"bottle": _flag(row["IsBottle"])}
 
 
-def _nothing(_row: Row) -> dict[str, Any]:
-    return {}
-
-
-# Pick-list tables: the type each syncs as, and its own fields.
-_SELECTIONS: dict[str, tuple[str, Callable[[Row], dict[str, Any]]]] = {
-    "MedicineSelection": ("MedicationSelection", _medication_selection),
-    "MilestoneSelection": ("MilestoneSelection", _for_age),
-    "VaccineSelection": ("VaccineSelection", _for_age),
-    "OtherFeedSelection": ("OtherFeedSelection", _other_feed_selection),
-    "OtherActivityDesc": ("OtherActivityDescription", _nothing),
-    "BathDesc": ("BathDesc", _nothing),
+# Pick-list tables: their own columns, and how those read.
+_PICK_LISTS: dict[str, tuple[tuple[str, ...], Callable[[Row], dict[str, Any]]]] = {
+    "MedicineSelection": (("IsPrescription", "AmountPerTime", "Unit", "Interval"), _medicine_entry),
+    "MilestoneSelection": (("ForAge", "BabyID"), _age_entry),
+    "VaccineSelection": (("ForAge",), _age_entry),
+    "OtherFeedSelection": (("IsBottle",), _food_entry),
 }
 
 
-def _volume(row: sqlite3.Row, column: str = "Amount") -> dict[str, Any]:
+def _ids(row: Row, *pairs: tuple[str, str]) -> dict[str, Any]:
+    """References the app stores as plain IDs, under the keys the library reads them by."""
+    return {key: row[column] for key, column in pairs if _text(row[column])}
+
+
+def _volume(row: Row, column: str = "Amount") -> dict[str, Any]:
     return _measure("VolumeMeasure", row[column], row["IsEnglishScale"])
 
 
-def _diaper(_r: _Reader, row: sqlite3.Row) -> dict[str, Any]:
-    keys = (
-        ("status", "Status"),
-        ("amount", "Amount"),
-        ("peeColor", "PeeColor"),
-        ("pooColor", "PooColor"),
-        ("texture", "Texture"),
-        ("flag", "Flag"),
+def _diaper(_r: _Reader, row: Row) -> dict[str, Any]:
+    # The column defaults: 5 is "not set" for the amount, colors and texture.
+    return {
+        "status": _number(row["Status"]),
+        "amount": _number(row["Amount"], 5),
+        "peeColor": _number(row["PeeColor"], 5),
+        "pooColor": _number(row["PooColor"], 5),
+        "texture": _number(row["Texture"], 5),
+        "flag": _number(row["Flag"]),
+    }
+
+
+def _nursing(_r: _Reader, row: Row) -> dict[str, Any]:
+    return {
+        "finishSide": _number(row["FinishSide"]),
+        "leftDuration": _number(row["LeftDuration"]),
+        "rightDuration": _number(row["RightDuration"]),
+        "bothDuration": _number(row["BothDuration"]),
+    } | _ids(row, ("descID", "DescID"))
+
+
+def _bottle(_r: _Reader, row: Row) -> dict[str, Any]:
+    return {"amount": _volume(row)} | _ids(row, ("descID", "DescID"))
+
+
+def _other_feed(r: _Reader, row: Row) -> dict[str, Any]:
+    payload: dict[str, Any] = {"unit": _text(row["Unit"])}
+    if _number(row["Amount"]) > 0:
+        payload["amount"] = _volume(row)
+    r.embed(
+        payload, "feedType", "OtherFeedSelection", "OtherFeedSelection", row["TypeID"], "typeID"
     )
-    return {key: _number(row[column]) for key, column in keys}
-
-
-def _nursing(_r: _Reader, row: sqlite3.Row) -> dict[str, Any]:
-    keys = (
-        ("finishSide", "FinishSide"),
-        ("leftDuration", "LeftDuration"),
-        ("rightDuration", "RightDuration"),
-        ("bothDuration", "BothDuration"),
-    )
-    return {key: _number(row[column]) for key, column in keys}
-
-
-def _bottle(_r: _Reader, row: sqlite3.Row) -> dict[str, Any]:
-    return {"amount": _volume(row)}
-
-
-def _other_feed(r: _Reader, row: sqlite3.Row) -> dict[str, Any]:
-    payload: dict[str, Any] = {"amount": _volume(row), "unit": _text(row["Unit"])}
-    if (food := r.embedded("OtherFeedSelection", row["TypeID"], "OtherFeedSelection")) is not None:
-        payload["feedType"] = food
+    if desc := _text(row["DescID"]):
+        # The app syncs a food's description as an object; often only its ID is set.
+        entry = r.entry("FeedDesc", desc) or {"objectID": desc, "timestamp": _EPOCH}
+        payload["desc"] = {**entry, "newFlage": "false", "BCObjectType": "FeedDescription"}
     return payload
 
 
-def _pump(_r: _Reader, row: sqlite3.Row) -> dict[str, Any]:
+def _pump(_r: _Reader, row: Row) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "amount": _volume(row),
         "finishSide": _number(row["FinishSide"]),
@@ -352,20 +385,25 @@ def _pump(_r: _Reader, row: sqlite3.Row) -> dict[str, Any]:
     return payload
 
 
-def _sleep(_r: _Reader, row: sqlite3.Row) -> dict[str, Any]:
-    return {"duration": _number(row["Duration"])}
+def _sleep(_r: _Reader, row: Row) -> dict[str, Any]:
+    ids = _ids(row, ("descID", "DescID"), ("locationID", "LocationID"))
+    return {"duration": _number(row["Duration"])} | ids
 
 
-def _temperature(_r: _Reader, row: sqlite3.Row) -> dict[str, Any]:
+def _temperature(_r: _Reader, row: Row) -> dict[str, Any]:
+    if _number(row["Temp"]) <= 0:
+        return {}
     return {"temperature": _measure("TemperatureMeasure", row["Temp"], row["IsEnglishScale"])}
 
 
-def _growth(_r: _Reader, row: sqlite3.Row) -> dict[str, Any]:
+def _growth(_r: _Reader, row: Row) -> dict[str, Any]:
     payload: dict[str, Any] = {}
     weight, length, head = (_number(row[c]) for c in ("Weight", "Length", "Head"))
+    # The column default is English (1) for both scales.
+    english_weight = 1 if row["IsEnglishWeightScale"] is None else row["IsEnglishWeightScale"]
+    english_length = 1 if row["IsEnglishLengthScale"] is None else row["IsEnglishLengthScale"]
     if weight > 0:
-        payload["weight"] = _measure("WeightMeasure", weight, row["IsEnglishWeightScale"])
-    english_length = row["IsEnglishLengthScale"]
+        payload["weight"] = _measure("WeightMeasure", weight, english_weight)
     if length > 0:
         payload["length"] = _measure("LengthMeasure", length, english_length)
     if head > 0:
@@ -373,70 +411,116 @@ def _growth(_r: _Reader, row: sqlite3.Row) -> dict[str, Any]:
     return payload
 
 
-def _medication(r: _Reader, row: sqlite3.Row) -> dict[str, Any]:
+def _medication(r: _Reader, row: Row) -> dict[str, Any]:
     payload: dict[str, Any] = {"amount": _number(row["Amount"])}
-    selection = r.embedded("MedicineSelection", row["MedID"], "MedicationSelection")
-    if selection is not None:
-        payload["medicationSelection"] = selection
+    r.embed(
+        payload,
+        "medicationSelection",
+        "MedicineSelection",
+        "MedicationSelection",
+        row["MedID"],
+        "medID",
+    )
     return payload
 
 
-def _milestone(r: _Reader, row: sqlite3.Row) -> dict[str, Any]:
-    kind = r.embedded("MilestoneSelection", row["MilestoneSelectionID"], "MilestoneSelection")
-    return {"milestoneType": kind} if kind is not None else {}
+def _milestone(r: _Reader, row: Row) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    selection = row["MilestoneSelectionID"]
+    r.embed(
+        payload,
+        "milestoneType",
+        "MilestoneSelection",
+        "MilestoneSelection",
+        selection,
+        "milestoneSelectionID",
+    )
+    return payload
 
 
-def _vaccine(r: _Reader, row: sqlite3.Row) -> dict[str, Any]:
-    kind = r.embedded("VaccineSelection", row["VaccID"], "VaccineSelection")
-    return {"vaccineType": kind} if kind is not None else {}
+def _vaccine(r: _Reader, row: Row) -> dict[str, Any]:
+    payload: dict[str, Any] = _ids(row, ("docVisitID", "DocVisitID"))
+    r.embed(payload, "vaccineType", "VaccineSelection", "VaccineSelection", row["VaccID"], "vaccID")
+    return payload
 
 
-def _other_activity(r: _Reader, row: sqlite3.Row) -> dict[str, Any]:
+def _other_activity(r: _Reader, row: Row) -> dict[str, Any]:
     payload: dict[str, Any] = {"duration": _number(row["Duration"])}
-    desc = r.embedded("OtherActivityDesc", row["DescID"], "OtherActivityDescription")
-    if desc is not None:
-        payload["desc"] = desc
+    payload |= _ids(row, ("locationID", "LocationID"))
+    r.embed(
+        payload, "desc", "OtherActivityDesc", "OtherActivityDescription", row["DescID"], "descID"
+    )
     return payload
 
 
-def _bath(r: _Reader, row: sqlite3.Row) -> dict[str, Any]:
-    kind = r.embedded("BathDesc", row["DescID"], "BathDesc")
-    return {"bathType": kind} if kind is not None else {}
-
-
-def _columns(*pairs: tuple[str, str]) -> Callable[[_Reader, sqlite3.Row], dict[str, Any]]:
+def _columns(*pairs: tuple[str, str]) -> Callable[[_Reader, Row], dict[str, Any]]:
     """Fields copied as they are, for types the library reads by their stored names."""
 
-    def build(_r: _Reader, row: sqlite3.Row) -> dict[str, Any]:
+    def build(_r: _Reader, row: Row) -> dict[str, Any]:
         return {key: row[column] for key, column in pairs if row[column] is not None}
 
     return build
 
 
-def _base(_r: _Reader, _row: sqlite3.Row) -> dict[str, Any]:
-    return {}
+def _table(
+    record_type: str, build: Callable[[_Reader, Row], dict[str, Any]], *columns: str
+) -> _Table:
+    return _Table(record_type, columns, build)
 
 
-# Record tables: the type each syncs as, and its own fields.
-_ACTIVITIES: dict[str, tuple[str, Callable[[_Reader, sqlite3.Row], dict[str, Any]]]] = {
-    "Diaper": ("Diaper", _diaper),
-    "Nursing": ("Nursing", _nursing),
-    "Formula": ("Formula", _bottle),
-    "Pumped": ("Pumped", _bottle),
-    "OtherFeed": ("OtherFeed", _other_feed),
-    "Pump": ("Pump", _pump),
-    "Sleep": ("Sleep", _sleep),
-    "Temperature": ("Temperature", _temperature),
-    "Growth": ("Growth", _growth),
-    "Medicine": ("Medication", _medication),
-    "Milestone": ("Milestone", _milestone),
-    "Vaccine": ("Vaccine", _vaccine),
-    "OtherActivity": ("OtherActivity", _other_activity),
-    "Bath": ("Bath", _bath),
-    "Joy": ("Joy", _base),
-    "Journal": ("Journal", _base),
-    "Sick": ("Sick", _columns(("symptom", "Symptom"))),
-    "Allergen": (
+# Record tables: the type each syncs as, its own columns, and how those read.
+_TABLES: dict[str, _Table] = {
+    "Diaper": _table(
+        "Diaper", _diaper, "Status", "Amount", "PeeColor", "PooColor", "Texture", "Flag"
+    ),
+    "Nursing": _table(
+        "Nursing",
+        _nursing,
+        "FinishSide",
+        "LeftDuration",
+        "RightDuration",
+        "BothDuration",
+        "DescID",
+    ),
+    "Formula": _table("Formula", _bottle, "Amount", "IsEnglishScale", "DescID"),
+    "Pumped": _table("Pumped", _bottle, "Amount", "IsEnglishScale", "DescID"),
+    "OtherFeed": _table(
+        "OtherFeed", _other_feed, "TypeID", "DescID", "Amount", "IsEnglishScale", "Unit"
+    ),
+    "Pump": _table(
+        "Pump",
+        _pump,
+        "FinishSide",
+        "Sides",
+        "Amount",
+        "IsEnglishScale",
+        "Label",
+        "LeftAmount",
+        "RightAmount",
+        "LeftDuration",
+        "RightDuration",
+    ),
+    "Sleep": _table("Sleep", _sleep, "Duration", "DescID", "LocationID"),
+    "Temperature": _table("Temperature", _temperature, "Temp", "IsEnglishScale"),
+    "Growth": _table(
+        "Growth",
+        _growth,
+        "Weight",
+        "Length",
+        "Head",
+        "IsEnglishWeightScale",
+        "IsEnglishLengthScale",
+    ),
+    "Medicine": _table("Medication", _medication, "MedID", "Amount"),
+    "Milestone": _table("Milestone", _milestone, "MilestoneSelectionID"),
+    "Vaccine": _table("Vaccine", _vaccine, "VaccID", "DocVisitID"),
+    "OtherActivity": _table("OtherActivity", _other_activity, "DescID", "LocationID", "Duration"),
+    # The app syncs a bath with no fields of its own; its type is kept as a plain ID.
+    "Bath": _table("Bath", _columns(("descID", "DescID")), "DescID"),
+    "Joy": _table("Joy", _columns()),
+    "Journal": _table("Journal", _columns()),
+    "Sick": _table("Sick", _columns(("symptom", "Symptom")), "Symptom"),
+    "Allergen": _table(
         "Allergen",
         _columns(
             ("sourceID", "SourceID"),
@@ -444,14 +528,21 @@ _ACTIVITIES: dict[str, tuple[str, Callable[[_Reader, sqlite3.Row], dict[str, Any
             ("severity", "Severity"),
             ("notSure", "NotSure"),
         ),
+        "SourceID",
+        "Reaction",
+        "Severity",
+        "NotSure",
     ),
-    "HealthQuestion": (
+    "HealthQuestion": _table(
         "HealthQuestion",
         _columns(
             ("question", "Question"), ("answer", "Answer"), ("doctorVisitID", "DoctorVisitID")
         ),
+        "Question",
+        "Answer",
+        "DoctorVisitID",
     ),
-    "DoctorVisit": (
+    "DoctorVisit": _table(
         "DoctorVisit",
         _columns(
             ("isAppointment", "IsAppointment"),
@@ -462,5 +553,12 @@ _ACTIVITIES: dict[str, tuple[str, Callable[[_Reader, sqlite3.Row], dict[str, Any
             ("growthID", "GrowthID"),
             ("sickID", "SickID"),
         ),
+        "IsAppointment",
+        "VisitType",
+        "DoctorID",
+        "DoctorNote",
+        "Symptom",
+        "GrowthID",
+        "SickID",
     ),
 }

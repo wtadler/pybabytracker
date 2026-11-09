@@ -31,6 +31,8 @@ DEFAULT_TIMEOUT = 30.0
 USER_AGENT = f"pybabytracker/{__version__}"
 MAX_PICTURE_BYTES = 20 * 1024 * 1024
 MAX_SEED_BYTES = 100 * 1024 * 1024
+# A seed can be large, so it gets longer than other requests, as long as data keeps coming.
+SEED_TIMEOUT = 600.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,10 +247,12 @@ class BabyTrackerClient:
         body, or a ``400`` or ``404`` (expected, not yet seen).
 
         A redirect raises ``ProtocolError`` and is not followed, and so does a body over
-        ``MAX_SEED_BYTES``.
+        ``MAX_SEED_BYTES``. The download may take up to ``SEED_TIMEOUT`` seconds in all, but fails
+        if the service goes quiet for the client's usual request timeout.
         """
+        limits = aiohttp.ClientTimeout(total=SEED_TIMEOUT, sock_read=self._timeout.total)
         status, content = await self._authorized(
-            lambda: self._send_bytes("/account/seed", MAX_SEED_BYTES), allow=(400, 404)
+            lambda: self._send_bytes("/account/seed", MAX_SEED_BYTES, limits), allow=(400, 404)
         )
         if 300 <= status < 400:
             raise ProtocolError(f"the service redirected the seed request (HTTP {status})")
@@ -295,9 +299,11 @@ class BabyTrackerClient:
     async def _send(self, method: str, path: str, body: Any = None) -> tuple[int, str]:
         return await self._exchange(method, path, body, lambda response: response.text())
 
-    async def _send_bytes(self, path: str, cap: int) -> tuple[int, bytes]:
+    async def _send_bytes(
+        self, path: str, cap: int, limits: aiohttp.ClientTimeout | None = None
+    ) -> tuple[int, bytes]:
         read = partial(_read_capped, cap=cap)
-        return await self._exchange("GET", path, None, read, allow_redirects=False)
+        return await self._exchange("GET", path, None, read, allow_redirects=False, limits=limits)
 
     async def _exchange[T](
         self,
@@ -307,6 +313,7 @@ class BabyTrackerClient:
         read: Callable[[aiohttp.ClientResponse], Awaitable[T]],
         *,
         allow_redirects: bool = True,
+        limits: aiohttp.ClientTimeout | None = None,
     ) -> tuple[int, T]:
         if self._session is None:
             self._session = aiohttp.ClientSession(
@@ -318,7 +325,7 @@ class BabyTrackerClient:
                 f"{self._base_url}{path}",
                 json=body,
                 headers={"User-Agent": USER_AGENT},
-                timeout=self._timeout,
+                timeout=limits or self._timeout,
                 allow_redirects=allow_redirects,
             ) as response:
                 return response.status, await read(response)

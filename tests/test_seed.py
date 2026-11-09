@@ -17,6 +17,7 @@ from pybabytracker import (
     OP_ADD,
     OP_DELETE,
     OP_UPDATE,
+    AuthenticationError,
     Baby,
     BabyTrackerClient,
     BabyTrackerConnectionError,
@@ -26,7 +27,6 @@ from pybabytracker import (
     Formula,
     Growth,
     Medication,
-    MedicationSelection,
     Milestone,
     Nursing,
     OtherActivity,
@@ -51,27 +51,36 @@ BABY = "11111111-AAAA-4AAA-8AAA-000000000001"
 GONE_BABY = "99999999-AAAA-4AAA-8AAA-000000000009"
 T0 = datetime(2025, 6, 1, 12, 0, tzinfo=UTC).timestamp()
 DEVICE = "aaaaaaaa-0000-4000-8000-000000000001"
-OLD_DEVICE = "bbbbbbbb-0000-4000-8000-000000000002"
 
 
 def rid(n: int) -> str:
     return f"CCCCCCCC-0000-4000-8000-{n:012d}"
 
 
-def database(**tables: list[dict[str, Any]]) -> bytes:
-    """A seed database with the app's schema and the given rows."""
+def connection_for(
+    tables: dict[str, list[dict[str, Any]]], replaced: dict[str, str] | None = None
+) -> sqlite3.Connection:
+    """The app's schema with the given rows; ``replaced`` swaps in other table definitions."""
     connection = sqlite3.connect(":memory:")
     connection.executescript(SCHEMA)
+    for table, definition in (replaced or {}).items():
+        connection.execute(f'DROP TABLE "{table}"')
+        connection.execute(definition)
     for table, rows in tables.items():
         for given in rows:
             # A column given as None is left out: NULL, or not in that table at all.
             row = {column: value for column, value in given.items() if value is not None}
             columns = ", ".join(f'"{c}"' for c in row)
             marks = ", ".join("?" for _ in row)
-            connection.execute(
-                f'INSERT INTO "{table}" ({columns}) VALUES ({marks})', list(row.values())
-            )
+            sql = f'INSERT INTO "{table}" ({columns}) VALUES ({marks})'
+            connection.execute(sql, list(row.values()))
     connection.commit()
+    return connection
+
+
+def database(**tables: list[dict[str, Any]]) -> bytes:
+    """A seed database with the app's schema and the given rows."""
+    connection = connection_for(tables)
     data = connection.serialize()
     connection.close()
     return data
@@ -85,14 +94,8 @@ def archive(data: bytes, name: str = "EasyLog.db") -> bytes:
 
 
 def baby_row(**overrides: Any) -> dict[str, Any]:
-    row = {
-        "ID": BABY,
-        "Timestamp": T0,
-        "Name": "Ada",
-        "DOB": T0 - 86400 * 90,
-        "DueDay": T0 - 86400 * 80,
-    }
-    return row | {"Gender": 1, "Picture": "PHOTO-1"} | overrides
+    row = {"ID": BABY, "Timestamp": T0, "Name": "Ada", "DOB": T0 - 86400 * 90}
+    return row | {"DueDay": T0 - 86400 * 80, "Gender": 1, "Picture": "PHOTO-1"} | overrides
 
 
 def activity(n: int, minutes: float = 0, **columns: Any) -> dict[str, Any]:
@@ -100,9 +103,13 @@ def activity(n: int, minutes: float = 0, **columns: Any) -> dict[str, Any]:
     return row | {"Note": f"note {n}", "HasPicture": 0, "BabyID": BABY} | columns
 
 
-def seeded(**tables: list[dict[str, Any]]) -> Seed:
+def seed_zip(**tables: list[dict[str, Any]]) -> bytes:
     tables.setdefault("Baby", [baby_row()])
-    return read_seed(archive(database(**tables)))
+    return archive(database(**tables))
+
+
+def seeded(**tables: list[dict[str, Any]]) -> Seed:
+    return read_seed(seed_zip(**tables))
 
 
 def only[R](seed: Seed, kind: type[R]) -> R:
@@ -132,20 +139,27 @@ def test_the_baby_is_a_record_and_embedded_in_each_of_its_records() -> None:
     baby = only(seed, Baby)
     assert (baby.name, baby.gender, baby.picture_file) == ("Ada", "true", "PHOTO-1.jpg")
     assert baby.dob == "2025-03-03 12:00:00 +0000"
-    assert only(seed, Sleep).baby == Baby.from_payload(
-        {k: v for k, v in baby.to_payload().items() if k != "timestamp"}
-        | {"timestamp": "1970-01-01 00:00:00 +0000"}
-    )
+    embedded = only(seed, Sleep).baby
+    assert embedded is not None
+    assert (embedded.object_id, embedded.name, embedded.dob) == (BABY, "Ada", baby.dob)
+
+
+def test_a_date_of_zero_is_unset() -> None:
+    seed = seeded(Baby=[baby_row(DueDay=0.0)])
+
+    baby = only(seed, Baby)
+    assert baby.due_day is None
+    assert "dueDay" not in baby.to_payload()
 
 
 def test_a_nursing_keeps_its_sides_and_minutes() -> None:
-    seed = seeded(
-        Nursing=[activity(1, FinishSide=2, LeftDuration=7, RightDuration=3, BothDuration=1)]
-    )
+    sides = {"FinishSide": 2, "LeftDuration": 7, "RightDuration": 3, "BothDuration": 1}
+    seed = seeded(Nursing=[activity(1, **sides)])
 
     nursing = only(seed, Nursing)
     assert (nursing.finish_side, nursing.left_duration, nursing.right_duration) == (2, 7, 3)
     assert nursing.both_duration == 1
+    assert nursing.desc_id is None
 
 
 @pytest.mark.parametrize(("english", "unit"), [(1, "oz"), (0, "ml")])
@@ -184,43 +198,87 @@ def test_a_medicine_dose_embeds_its_medicine() -> None:
     assert (dose.medicine_name, dose.amount) == ("Drops", 0.5)
     assert dose.medication_selection is not None
     assert dose.medication_selection["interval"] == 240
-    assert only(seed, MedicationSelection).name == "Drops"
 
 
-def test_built_in_pick_list_entries_are_embedded_but_are_not_records() -> None:
+def test_pick_list_entries_are_embedded_but_are_not_records() -> None:
+    """A seed entry as a record of its own would beat a newer copy a log's record embeds."""
     milestone = {"ID": "EasyLogSeedM1", "Timestamp": 0, "Name": "Rolls over", "Description": ""}
-    vaccine = {"ID": "EasyLogSeedV1", "Timestamp": 0, "Name": "HepB", "Description": ""}
+    vaccine = {"ID": "VACC-1", "Timestamp": T0, "Name": "Custom shot", "Description": ""}
+    medicine = {"ID": "MED-1", "Timestamp": T0, "Name": "Drops", "Description": ""}
     seed = seeded(
         MilestoneSelection=[milestone | {"ForAge": 4}],
         VaccineSelection=[vaccine | {"ForAge": 0}],
+        MedicineSelection=[medicine],
         Milestone=[activity(1, MilestoneSelectionID="EasyLogSeedM1")],
-        Vaccine=[activity(2, VaccID="EasyLogSeedV1", DocVisitID="NotUsed")],
+        Vaccine=[activity(2, VaccID="VACC-1", DocVisitID="NotUsed")],
     )
 
     assert only(seed, Milestone).milestone_name == "Rolls over"
-    assert only(seed, Vaccine).vaccine_name == "HepB"
-    assert not [r for r in seed.records if r.object_id.startswith("EasyLogSeed")]
+    assert only(seed, Vaccine).vaccine_name == "Custom shot"
+    assert {type(r) for r in seed.records} == {Baby, Milestone, Vaccine}
 
 
-def test_a_food_an_activity_and_a_bath_name_their_pick_list_entry() -> None:
+def test_a_custom_milestone_keeps_the_baby_it_is_for() -> None:
+    milestone = {"ID": "MS-1", "Timestamp": T0, "Name": "First swim", "Description": ""}
+    seed = seeded(
+        MilestoneSelection=[milestone | {"ForAge": 0, "BabyID": BABY}],
+        Milestone=[activity(1, MilestoneSelectionID="MS-1")],
+    )
+
+    kind = only(seed, Milestone).milestone_type
+    assert kind is not None and kind["babyID"] == BABY
+
+
+def test_an_entry_missing_from_the_seed_keeps_its_id_without_a_nameless_copy() -> None:
+    seed = seeded(
+        Medicine=[activity(1, MedID="GONE-MED", Amount=1)],
+        Milestone=[activity(2, MilestoneSelectionID="GONE-MS")],
+    )
+
+    dose = only(seed, Medication)
+    assert dose.medication_selection is None
+    assert dose.extra["medID"] == "GONE-MED"
+    milestone = only(seed, Milestone)
+    assert milestone.milestone_type is None
+    assert milestone.milestone_selection_id == "GONE-MS"
+
+
+def test_a_food_and_an_activity_name_their_pick_list_entry() -> None:
     food = {"ID": "FOOD-1", "Timestamp": T0, "Name": "Pear", "Description": "", "IsBottle": 0}
-    kind = {"ID": "ACT-1", "Timestamp": T0, "Name": "Tummy time", "Description": ""}
-    bath = {"ID": "EasyLogSeedB1", "Timestamp": 0, "Name": "Sponge bath", "Description": ""}
+    kind = {"ID": "ACT-1", "Timestamp": T0, "Name": "Bath", "Description": ""}
+    feed_columns: dict[str, Any] = {"TypeID": "FOOD-1", "Amount": 2, "IsEnglishScale": 1}
+    feed_columns["Unit"] = "Tbsp"
     seed = seeded(
         OtherFeedSelection=[food],
         OtherActivityDesc=[kind],
-        BathDesc=[bath],
-        OtherFeed=[activity(1, TypeID="FOOD-1", Amount=2, IsEnglishScale=1, Unit="Tbsp")],
-        OtherActivity=[activity(2, DescID="ACT-1", Duration=15)],
-        Bath=[activity(3, DescID="EasyLogSeedB1")],
+        OtherFeed=[activity(1, DescID="DESC-1", **feed_columns)],
+        OtherActivity=[activity(2, DescID="ACT-1", Duration=15, LocationID="LOC-1")],
     )
 
     feed = only(seed, OtherFeed)
     assert (feed.food_name, feed.quantity, feed.unit) == ("Pear", 2, "Tbsp")
-    assert only(seed, OtherActivity).activity_name == "Tummy time"
-    assert only(seed, OtherActivity).duration == 15
-    bath_record = only(seed, Bath)
-    assert bath_record.extra["bathType"]["name"] == "Sponge bath"
+    assert feed.desc is not None and feed.desc["objectID"] == "DESC-1"
+    assert feed.desc["BCObjectType"] == "FeedDescription"
+    other = only(seed, OtherActivity)
+    assert (other.activity_name, other.duration, other.location_id) == ("Bath", 15, "LOC-1")
+
+
+def test_a_food_without_an_amount_has_none() -> None:
+    seed = seeded(OtherFeed=[activity(1, TypeID="X", Amount=0, IsEnglishScale=1, Unit="")])
+    assert only(seed, OtherFeed).amount is None
+
+
+def test_plain_id_references_are_kept() -> None:
+    seed = seeded(
+        Sleep=[activity(1, Duration=30, DescID="SD-1", LocationID="SL-1")],
+        Formula=[activity(2, Amount=3, IsEnglishScale=1, DescID="FD-1")],
+        Bath=[activity(3, DescID="BD-1")],
+    )
+
+    sleep = only(seed, Sleep)
+    assert (sleep.desc_id, sleep.location_id) == ("SD-1", "SL-1")
+    assert only(seed, Formula).desc_id == "FD-1"
+    assert only(seed, Bath).desc_id == "BD-1"
 
 
 def test_a_growth_has_only_the_measures_taken() -> None:
@@ -239,22 +297,19 @@ def test_a_growth_has_only_the_measures_taken() -> None:
     assert growth.head_reading is not None and growth.head_reading.unit == "cm"
 
 
-def test_a_temperature_keeps_its_scale() -> None:
-    seed = seeded(Temperature=[activity(1, Temp=37.5, IsEnglishScale=0)])
+@pytest.mark.parametrize(("temp", "english", "expected"), [(37.5, 0, (37.5, "C")), (0, 1, None)])
+def test_a_temperature_keeps_its_scale_and_zero_is_unset(
+    temp: float, english: int, expected: tuple[float, str] | None
+) -> None:
+    seed = seeded(Temperature=[activity(1, Temp=temp, IsEnglishScale=english)])
 
     reading = only(seed, Temperature).reading
-    assert reading is not None
-    assert (reading.value, reading.unit) == (37.5, "C")
+    assert (None if reading is None else (reading.value, reading.unit)) == expected
 
 
 def test_a_record_lists_its_pictures() -> None:
-    picture = {
-        "ID": "PIC-1",
-        "Timestamp": T0,
-        "ActivityID": rid(1),
-        "Type": 0,
-        "FileName": "FILE-1",
-    }
+    picture = {"ID": "PIC-1", "Timestamp": T0, "ActivityID": rid(1), "Type": 0}
+    picture |= {"FileName": "FILE-1", "Thumbnail": b"\xff" * 64}
     seed = seeded(Milestone=[activity(1, MilestoneSelectionID="X")], Picture=[picture])
 
     assert [p.file_name for p in only(seed, Milestone).pictures] == ["FILE-1"]
@@ -266,22 +321,30 @@ def test_a_record_of_a_baby_not_in_the_seed_is_left_out() -> None:
     assert [r.object_id for r in seed.records if isinstance(r, Diaper)] == [rid(1)]
 
 
-def test_the_merged_positions_are_where_each_log_is_read_from() -> None:
-    seed = seeded(
-        MergedTransaction=[
-            {"DeviceID": OLD_DEVICE, "SyncID": 44},
-            {"DeviceID": DEVICE, "SyncID": 3},
-            {"DeviceID": "", "SyncID": 9},
-        ]
-    )
-
-    assert seed.merged == {OLD_DEVICE: 44, DEVICE: 3}
-
-
 def test_an_empty_seed_has_only_its_babies() -> None:
-    seed = seeded()
-    assert [type(r) for r in seed.records] == [Baby]
-    assert seed.merged == {}
+    assert [type(r) for r in seeded().records] == [Baby]
+
+
+def test_an_older_schema_without_later_columns_keeps_its_rows() -> None:
+    """Columns the app added later fall back to their defaults instead of dropping rows."""
+    old_tables = {
+        "Pump": 'CREATE TABLE "Pump" ("ID" TEXT PRIMARY KEY, "Timestamp" REAL, "Time" REAL, '
+        '"Note" TEXT, "HasPicture" INTEGER, "FinishSide" INTEGER, "Sides" INTEGER, '
+        '"Amount" REAL, "IsEnglishScale" INTEGER, "Label" TEXT, "PumpedID" TEXT)',
+        "Diaper": 'CREATE TABLE "Diaper" ("ID" TEXT PRIMARY KEY, "Timestamp" REAL, "Time" REAL, '
+        '"Note" TEXT, "HasPicture" INTEGER, "BabyID" TEXT, "Status" INTEGER)',
+    }
+    pump: dict[str, Any] = {"FinishSide": 2, "Sides": 0, "Amount": 5, "IsEnglishScale": 1}
+    rows = {"Baby": [baby_row()], "Pump": [activity(1, BabyID=None, **pump)]}
+    rows["Diaper"] = [activity(2, Status=1)]
+    connection = connection_for(rows, old_tables)
+    seed = read_seed(archive(connection.serialize()))
+
+    old_pump = only(seed, Pump)
+    assert (old_pump.finish_side, old_pump.left_duration) == (2, 0)
+    assert old_pump.volume is not None and old_pump.volume.value == 5
+    diaper = only(seed, Diaper)
+    assert (diaper.status, diaper.amount, diaper.pee_color) == (1, 5, 5)
 
 
 @pytest.mark.parametrize(
@@ -297,22 +360,59 @@ def test_a_seed_that_is_not_one_raises(data: bytes) -> None:
         read_seed(data)
 
 
+def test_a_damaged_zip_stream_raises_protocol_error() -> None:
+    good = seed_zip(Diaper=[activity(1, Status=0)])
+    # Damage the compressed bytes, after the local header, before the central directory.
+    damaged = bytearray(good)
+    for i in range(60, 120):
+        damaged[i] ^= 0xFF
+    with pytest.raises(ProtocolError):
+        read_seed(bytes(damaged))
+
+
+def test_a_corrupt_database_page_raises_protocol_error() -> None:
+    data = bytearray(
+        database(Baby=[baby_row()], Diaper=[activity(n, Status=0) for n in range(300)])
+    )
+    for i in range(len(data) // 2, len(data) // 2 + 4096):
+        data[i] = 0xAB
+    with pytest.raises(ProtocolError):
+        read_seed(archive(bytes(data)))
+
+
+def test_a_database_saved_in_wal_mode_reads() -> None:
+    data = bytearray(database(Baby=[baby_row()], Diaper=[activity(1, Status=0)]))
+    data[18] = data[19] = 2  # the header bytes a WAL-mode database has
+
+    assert only(read_seed(archive(bytes(data))), Diaper).object_id == rid(1)
+
+
+def test_a_column_the_schema_computes_is_never_read() -> None:
+    """A generated column could compute anything, so only stored columns are read."""
+    hostile = (
+        'CREATE TABLE "Diaper" ("ID" TEXT PRIMARY KEY, "Timestamp" REAL, "Time" REAL, '
+        '"HasPicture" INTEGER, "BabyID" TEXT, "Status" INTEGER, '
+        '"Note" BLOB GENERATED ALWAYS AS (zeroblob(50000000)) VIRTUAL)'
+    )
+    rows = {"Baby": [baby_row()], "Diaper": [activity(1, Status=0, Note=None)]}
+    connection = connection_for(rows, {"Diaper": hostile})
+
+    assert only(read_seed(archive(connection.serialize())), Diaper).note == ""
+
+
+def test_a_stored_value_over_the_limit_raises_protocol_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(seed_module, "_MAX_VALUE_BYTES", 1000)
+    data = database(Baby=[baby_row()], Diaper=[activity(1, Status=0, Note="x" * 2000)])
+    with pytest.raises(ProtocolError):
+        read_seed(archive(data))
+
+
 def test_a_database_over_the_cap_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(seed_module, "MAX_SEED_DATABASE_BYTES", 1000)
     with pytest.raises(ProtocolError):
-        read_seed(archive(database()))
-
-
-def test_a_row_missing_a_column_is_skipped(caplog: pytest.LogCaptureFixture) -> None:
-    data = database(Baby=[baby_row()], Sleep=[activity(1, Duration=5)])
-    connection = sqlite3.connect(":memory:")
-    connection.deserialize(data)
-    connection.execute('ALTER TABLE "Sleep" DROP COLUMN "Duration"')
-    connection.commit()
-    seed = read_seed(archive(connection.serialize()))
-
-    assert not [r for r in seed.records if isinstance(r, Sleep)]
-    assert "Skipping seed row" in caplog.text
+        read_seed(seed_zip())
 
 
 # --- merging under the logs --------------------------------------------------------------------
@@ -353,32 +453,36 @@ class SeedSource:
         return [t for t in self.logs[device_uuid] if t.sync_id > since_sync_id]
 
 
-def seed_zip(**tables: list[dict[str, Any]]) -> bytes:
-    tables.setdefault("Baby", [baby_row()])
-    return archive(database(**tables))
+class LogsOnly:
+    """A source that can't fetch a seed."""
+
+    async def get_devices(self) -> list[Device]:
+        return []
+
+    async def get_transactions(self, device_uuid: str, since_sync_id: int) -> list[RawTransaction]:
+        return []
 
 
 async def test_the_first_sync_reads_the_seed_once() -> None:
     source = SeedSource(seed_zip(Nursing=[activity(1, LeftDuration=7, FinishSide=1)]))
     engine = SyncEngine()
 
-    await engine.sync(source)
-    await engine.sync(source)
+    first = await engine.sync(source)
+    second = await engine.sync(source)
 
     assert source.seed_reads == 1
+    assert (first.seed_read, second.seed_read) == (True, False)
     assert isinstance(engine.records[rid(1)], Nursing)
     assert isinstance(engine.latest_records(BABY)["Nursing"], Nursing)
 
 
-async def test_an_edit_in_a_log_wins_over_the_seed() -> None:
+async def test_a_newer_edit_in_a_log_wins_over_the_seed() -> None:
     seeded_sleep = only(seeded(Sleep=[activity(1, Duration=30)]), Sleep)
     edited = payload(seeded_sleep, duration=40, timestamp="2025-06-02 00:00:00 +0000")
-    source = SeedSource(
-        seed_zip(Sleep=[activity(1, Duration=30)]), {DEVICE: [tx(1, OP_UPDATE, edited)]}
-    )
+    log = {DEVICE: [tx(1, OP_UPDATE, edited)]}
     engine = SyncEngine()
 
-    await engine.sync(source)
+    await engine.sync(SeedSource(seed_zip(Sleep=[activity(1, Duration=30)]), log))
 
     record = engine.records[rid(1)]
     assert isinstance(record, Sleep) and record.duration == 40
@@ -386,16 +490,26 @@ async def test_an_edit_in_a_log_wins_over_the_seed() -> None:
 
 async def test_the_same_record_in_a_log_wins_even_with_the_seeds_timestamp() -> None:
     seeded_sleep = only(seeded(Sleep=[activity(1, Duration=30)]), Sleep)
-    source = SeedSource(
-        seed_zip(Sleep=[activity(1, Duration=30)]),
-        {DEVICE: [tx(1, OP_ADD, payload(seeded_sleep, duration=31))]},
-    )
+    log = {DEVICE: [tx(1, OP_ADD, payload(seeded_sleep, duration=31))]}
     engine = SyncEngine()
 
-    await engine.sync(source)
+    await engine.sync(SeedSource(seed_zip(Sleep=[activity(1, Duration=30)]), log))
 
     record = engine.records[rid(1)]
     assert isinstance(record, Sleep) and record.duration == 31
+
+
+async def test_an_older_log_copy_loses_to_the_seed_as_between_devices() -> None:
+    seeded_sleep = only(seeded(Sleep=[activity(1, Duration=30)]), Sleep)
+    older = payload(seeded_sleep, duration=20, timestamp="2025-05-01 00:00:00 +0000")
+    engine = SyncEngine()
+
+    await engine.sync(
+        SeedSource(seed_zip(Sleep=[activity(1, Duration=30)]), {DEVICE: [tx(1, OP_ADD, older)]})
+    )
+
+    record = engine.records[rid(1)]
+    assert isinstance(record, Sleep) and record.duration == 30
 
 
 @pytest.mark.parametrize("seed_first", [True, False])
@@ -408,7 +522,7 @@ async def test_a_delete_in_a_log_removes_a_seed_record_in_either_order(seed_firs
     else:
         await engine.sync(SeedSource(None, log))
         state = engine.to_dict()
-        del state["seeded"]  # an install from before seeds were read
+        state["seeded"] = False  # an install from before seeds were read
         engine = SyncEngine.from_dict(state)
         await engine.sync(SeedSource(seed_zip(Diaper=[activity(1, Status=0)]), log))
 
@@ -416,20 +530,37 @@ async def test_a_delete_in_a_log_removes_a_seed_record_in_either_order(seed_firs
     assert engine.is_deleted(rid(1))
 
 
-async def test_a_log_is_read_from_where_the_seeds_copy_of_it_ends() -> None:
+async def test_every_log_is_read_from_the_start_whatever_the_seed_says() -> None:
+    """The app empties the seed's list of merged logs when it loads a seed and reads every log
+    from the start, so this device's own records and any delete are always seen."""
     diaper = only(seeded(Diaper=[activity(1, Status=0)]), Diaper)
-    newer = payload(diaper, objectID=rid(2))
     source = SeedSource(
-        seed_zip(MergedTransaction=[{"DeviceID": DEVICE, "SyncID": 1}]),
-        {DEVICE: [tx(1, OP_ADD, payload(diaper)), tx(2, OP_ADD, newer)]},
+        seed_zip(MergedTransaction=[{"DeviceID": DEVICE, "SyncID": 5}]),
+        {DEVICE: [tx(1, OP_ADD, payload(diaper)), tx(2, OP_DELETE, payload(diaper))]},
     )
-    engine = SyncEngine()
+    engine = SyncEngine(device_uuid=DEVICE)
 
     await engine.sync(source)
 
-    assert source.fetches == [(DEVICE, 1)]
-    assert rid(2) in engine.records
-    assert rid(1) not in engine.records
+    assert source.fetches == [(DEVICE, 0)]
+    assert engine.is_deleted(rid(1))
+    assert engine.last_seen[DEVICE] == 2
+
+
+async def test_this_devices_own_adds_are_still_its_own_after_a_seed() -> None:
+    diaper = only(seeded(Diaper=[activity(1, Status=0)]), Diaper)
+    source = SeedSource(
+        seed_zip(
+            Diaper=[activity(1, Status=0)], MergedTransaction=[{"DeviceID": DEVICE, "SyncID": 1}]
+        ),
+        {DEVICE: [tx(1, OP_ADD, payload(diaper))]},
+    )
+    engine = SyncEngine(device_uuid=DEVICE)
+
+    await engine.sync(source)
+
+    assert rid(1) in engine.created_ids
+    assert [object_id for object_id, _ in engine.own_writes()] == [rid(1)]
 
 
 async def test_state_saved_before_seeds_reads_the_seed_on_the_next_sync() -> None:
@@ -458,7 +589,7 @@ async def test_a_loaded_seed_survives_a_save_and_load() -> None:
     assert rid(1) in loaded.records
 
 
-async def test_an_unreadable_seed_is_warned_about_and_the_logs_still_sync(
+async def test_an_unreadable_seed_is_warned_about_once_and_the_logs_still_sync(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     diaper = only(seeded(Diaper=[activity(1, Status=0)]), Diaper)
@@ -473,24 +604,59 @@ async def test_an_unreadable_seed_is_warned_about_and_the_logs_still_sync(
     assert "older history is missing" in caplog.text
 
 
-async def test_a_connection_failure_on_the_seed_fails_the_sync_and_is_tried_again() -> None:
-    source = SeedSource(seed_zip(Diaper=[activity(1, Status=0)]))
-    source.fail = BabyTrackerConnectionError("down")
+@pytest.mark.parametrize(
+    "failure",
+    [BabyTrackerConnectionError("down"), ProtocolError("the service answered with HTTP 429")],
+)
+async def test_a_failed_download_lets_the_logs_sync_and_is_tried_again(
+    failure: Exception, caplog: pytest.LogCaptureFixture
+) -> None:
+    diaper = only(seeded(Diaper=[activity(1, Status=0)]), Diaper)
+    source = SeedSource(
+        seed_zip(Sleep=[activity(2, Duration=30)]), {DEVICE: [tx(1, OP_ADD, payload(diaper))]}
+    )
+    source.fail = failure
     engine = SyncEngine()
 
-    with pytest.raises(BabyTrackerConnectionError):
-        await engine.sync(source)
+    result = await engine.sync(source)
+    assert rid(1) in engine.records
+    assert engine.to_dict()["seeded"] is False
+    assert result.seed_read is False
+    await engine.sync(source)
     source.fail = None
     await engine.sync(source)
 
-    assert source.seed_reads == 2
+    assert source.seed_reads == 3
+    assert rid(2) in engine.records
+    assert caplog.text.count("Couldn't download the account's seed") == 1
+
+
+async def test_a_rejected_sign_in_on_the_seed_fails_the_sync() -> None:
+    source = SeedSource(seed_zip())
+    source.fail = AuthenticationError("rejected")
+
+    with pytest.raises(AuthenticationError):
+        await SyncEngine().sync(source)
+
+
+async def test_a_source_without_a_seed_syncs_and_reads_one_later() -> None:
+    engine = SyncEngine()
+    await engine.sync(LogsOnly())
+    assert engine.to_dict()["seeded"] is False
+
+    source = SeedSource(seed_zip(Diaper=[activity(1, Status=0)]))
+    await engine.sync(source)
     assert rid(1) in engine.records
 
 
-async def test_a_source_without_a_seed_syncs_as_before() -> None:
+async def test_an_account_with_no_seed_is_not_asked_again() -> None:
+    source = SeedSource(None)
     engine = SyncEngine()
-    await engine.sync(SeedSource(None))
-    assert engine.to_dict()["seeded"] is True
+
+    assert (await engine.sync(source)).seed_read is True
+    await engine.sync(source)
+
+    assert source.seed_reads == 1
 
 
 # --- downloading it ----------------------------------------------------------------------------
@@ -535,6 +701,23 @@ async def test_a_seed_past_the_size_cap_raises(
         await client.get_seed()
 
 
+async def test_a_seed_has_longer_than_other_requests(
+    client: BabyTrackerClient, fake_server: FakeSyncServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_server.seed = seed_zip()
+    seen: list[Any] = []
+    original = client_module.BabyTrackerClient._exchange
+
+    async def spy(self: BabyTrackerClient, *args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs.get("limits"))
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(client_module.BabyTrackerClient, "_exchange", spy)
+    await client.get_seed()
+
+    assert seen[-1] is not None and seen[-1].total == client_module.SEED_TIMEOUT
+
+
 async def test_a_first_sync_through_the_client_loads_the_seed(
     client: BabyTrackerClient, fake_server: FakeSyncServer
 ) -> None:
@@ -544,3 +727,14 @@ async def test_a_first_sync_through_the_client_loads_the_seed(
     await engine.sync(client)
 
     assert isinstance(engine.records[rid(1)], Nursing)
+
+
+async def test_a_failed_seed_download_through_the_client_still_syncs_the_logs(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    fake_server.fail_paths["/account/seed"] = 429
+    engine = SyncEngine()
+
+    await engine.sync(client)
+
+    assert engine.to_dict()["seeded"] is False

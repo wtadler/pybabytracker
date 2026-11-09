@@ -257,6 +257,9 @@ class SyncResult:
     devices_fetched: int = 0
     transactions_applied: int = 0
     transactions_skipped: int = 0
+    # This sync read the account's seed, or learned it has none: the state changed even if no
+    # log entry was applied, so save it.
+    seed_read: bool = False
 
 
 class SyncEngine:
@@ -286,6 +289,7 @@ class SyncEngine:
         self._logged_unknown_types: set[str] = set()
         self._account_id: int | None = None
         self._seeded = False  # whether the account's seed has been read
+        self._seed_failed = False  # a download failed this run; warn once
         self._lock = asyncio.Lock()
 
     @property
@@ -1039,8 +1043,10 @@ class SyncEngine:
             return result
 
     async def _sync(self, source: SyncSource) -> SyncResult:
+        seed_read = False
         if not self._seeded:
             await self._read_seed(source)
+            seed_read = self._seeded
         listed = await source.get_devices()
         self._check_account(source)
         devices = self.devices_to_fetch(listed)
@@ -1049,41 +1055,50 @@ class SyncEngine:
             result = await self._read_through(source, device.device_uuid, device.last_sync_id)
             applied += result.applied
             skipped += result.skipped
-        return SyncResult(len(devices), applied, skipped)
+        return SyncResult(len(devices), applied, skipped, seed_read)
 
     async def _read_seed(self, source: SyncSource) -> None:
         """Load the account's seed, once, if ``source`` can fetch it (``get_seed``).
 
-        A seed that can't be read is warned about and not tried again, so the logs still sync.
-        A connection or sign-in failure raises, and the next sync tries again.
+        A download that fails is warned about and tried again on the next sync; the logs still
+        sync meanwhile. A seed that downloads but can't be read is warned about and not tried
+        again. A rejected sign-in raises, as it would for the logs.
         """
         get_seed = getattr(source, "get_seed", None)
         if get_seed is None:
-            self._seeded = True
             return
         try:
             archive = await get_seed()
-            seed = await asyncio.to_thread(read_seed, archive) if archive else None
-        except ProtocolError as err:
-            _LOGGER.warning("Can't read the account's seed, so older history is missing: %s", err)
-            seed = None
-        if seed is not None:
-            self.load_seed(seed)
+        except AuthenticationError:
+            raise
+        except BabyTrackerError as err:
+            log = _LOGGER.debug if self._seed_failed else _LOGGER.warning
+            log("Couldn't download the account's seed; trying again next sync: %s", err)
+            self._seed_failed = True
+            return
+        if archive:
+            try:
+                seed = await asyncio.to_thread(read_seed, archive)
+            except ProtocolError as err:
+                _LOGGER.warning(
+                    "Can't read the account's seed, so older history is missing: %s", err
+                )
+            else:
+                self.load_seed(seed)
         self._seeded = True
 
     def load_seed(self, seed: Seed) -> None:
-        """Merge a seed's records under everything the logs hold. No I/O.
+        """Merge a seed's records under the logs. No I/O.
 
-        A seed record is older than any log entry for the same record, so an edit or a delete in
-        a log wins, whichever is applied first. Each device's log is then read from where the
-        seed's copy of it ends.
+        Each seed record is stored as an add from no device, number 0, so the merge rules treat
+        it as older than any log entry with the same timestamp: a log copy of the record wins
+        unless its timestamp is older than the seed's, as between any two devices, and a delete
+        removes it unless the seed's copy is newer. Every log is still read from the start, as
+        the app does after loading a seed.
         """
         for record in seed.records:
             stamp = record.timestamp.timestamp() if record.timestamp is not None else 0.0
             self._store(record, _Version(stamp, _RANK_ADD, "", 0))
-        for device_uuid, sync_id in seed.merged.items():
-            if sync_id > self._last_seen.get(device_uuid, 0):
-                self._last_seen[device_uuid] = sync_id
         self._seeded = True
 
     async def _read_through(self, source: SyncSource, device_uuid: str, last: int) -> ApplyResult:
