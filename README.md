@@ -225,6 +225,16 @@ Tombstones are saved by `to_dict()`. State saved by an older version (1) loads w
 A payload that can't be decoded at all is skipped with a warning, and the sync moves past it. A
 fresh `SyncEngine` replays every log, so it recovers skipped payloads once a fix ships.
 
+### The seed
+
+The logs don't hold the whole history. The account also has a seed, a full copy of its database
+as of some point (`client.get_seed()`, a zip that `read_seed` decodes), and records from devices
+that have since left the account are only there. The first sync reads it before the logs, and
+state saved before this version reads it on its next sync. Seed records are merged under the
+logs: an edit or delete in a log wins whichever is applied first, and each device's log is read
+from where the seed's copy of it ends. A seed that can't be read is warned about once and the
+logs still sync; a connection failure fails the sync, and the next one tries again.
+
 ## Command line
 
 ```sh

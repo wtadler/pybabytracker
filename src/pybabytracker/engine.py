@@ -150,6 +150,7 @@ from .models import (
     encode_transaction,
     is_account_id,
 )
+from .seed import Seed, read_seed
 from .selections import (
     BUILT_IN_ACTIVITIES,
     BUILT_IN_MILESTONES,
@@ -284,6 +285,7 @@ class SyncEngine:
         self._own_updates: set[str] = set()  # objects this device posted an update (an end) to
         self._logged_unknown_types: set[str] = set()
         self._account_id: int | None = None
+        self._seeded = False  # whether the account's seed has been read
         self._lock = asyncio.Lock()
 
     @property
@@ -1037,6 +1039,8 @@ class SyncEngine:
             return result
 
     async def _sync(self, source: SyncSource) -> SyncResult:
+        if not self._seeded:
+            await self._read_seed(source)
         listed = await source.get_devices()
         self._check_account(source)
         devices = self.devices_to_fetch(listed)
@@ -1046,6 +1050,41 @@ class SyncEngine:
             applied += result.applied
             skipped += result.skipped
         return SyncResult(len(devices), applied, skipped)
+
+    async def _read_seed(self, source: SyncSource) -> None:
+        """Load the account's seed, once, if ``source`` can fetch it (``get_seed``).
+
+        A seed that can't be read is warned about and not tried again, so the logs still sync.
+        A connection or sign-in failure raises, and the next sync tries again.
+        """
+        get_seed = getattr(source, "get_seed", None)
+        if get_seed is None:
+            self._seeded = True
+            return
+        try:
+            archive = await get_seed()
+            seed = await asyncio.to_thread(read_seed, archive) if archive else None
+        except ProtocolError as err:
+            _LOGGER.warning("Can't read the account's seed, so older history is missing: %s", err)
+            seed = None
+        if seed is not None:
+            self.load_seed(seed)
+        self._seeded = True
+
+    def load_seed(self, seed: Seed) -> None:
+        """Merge a seed's records under everything the logs hold. No I/O.
+
+        A seed record is older than any log entry for the same record, so an edit or a delete in
+        a log wins, whichever is applied first. Each device's log is then read from where the
+        seed's copy of it ends.
+        """
+        for record in seed.records:
+            stamp = record.timestamp.timestamp() if record.timestamp is not None else 0.0
+            self._store(record, _Version(stamp, _RANK_ADD, "", 0))
+        for device_uuid, sync_id in seed.merged.items():
+            if sync_id > self._last_seen.get(device_uuid, 0):
+                self._last_seen[device_uuid] = sync_id
+        self._seeded = True
 
     async def _read_through(self, source: SyncSource, device_uuid: str, last: int) -> ApplyResult:
         """Read and apply a device's log page by page from what's been seen, until reaching
@@ -1192,6 +1231,7 @@ class SyncEngine:
             "created": sorted(self._created),
             "created_numbers": dict(sorted(self._add_numbers.items())),
             "own_updates": sorted(self._own_updates),
+            "seeded": self._seeded,
             "last_seen": dict(sorted(self._last_seen.items())),
             "account_id": self._account_id,
             "records": [
@@ -1246,6 +1286,8 @@ class SyncEngine:
         engine._own_updates = {str(i) for i in data.get("own_updates", [])}
         account_id = data.get("account_id")
         engine._account_id = account_id if is_account_id(account_id) else None
+        # State saved before seeds were read has none: the next sync reads it.
+        engine._seeded = bool(data.get("seeded", False))
         for entry in data["records"]:
             if version == 1:
                 record = decode_payload(entry)

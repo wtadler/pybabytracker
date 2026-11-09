@@ -93,6 +93,11 @@ class FakeSyncServer:
         self.picture_raw_paths: list[str] = []
         # Send picture bodies in chunks, with no Content-Length.
         self.picture_chunked = False
+        # The account's seed zip; None answers with missing_seed_status.
+        self.seed: bytes | None = None
+        self.missing_seed_status = 404
+        # Answer the seed request with a redirect to this location.
+        self.seed_redirect: str | None = None
 
     # --- test setup helpers -------------------------------------------------
 
@@ -136,6 +141,7 @@ class FakeSyncServer:
         app.router.add_get("/account/transaction/{uuid}/{since}", self._get_transactions)
         app.router.add_post("/account/transaction", self._post_transaction)
         app.router.add_get("/account/picture/{name}", self._get_picture)
+        app.router.add_get("/account/seed", self._get_seed)
         app.router.add_get("/elsewhere/{name}", self._get_elsewhere)
         return app
 
@@ -208,6 +214,18 @@ class FakeSyncServer:
             await stream.write_eof()
             return stream
         return web.Response(body=content, content_type="image/jpeg")
+
+    async def _get_seed(self, request: web.Request) -> web.Response:
+        if (rejected := await self._guard(request)) is not None:
+            return rejected
+        if self.seed_redirect is not None:
+            return web.Response(
+                status=self.redirect_status, headers={"Location": self.seed_redirect}
+            )
+        if self.seed is None:
+            return web.Response(status=self.missing_seed_status, text="Not Found")
+        # The live service labels the zip text/html, like everything else.
+        return web.Response(body=self.seed, content_type="text/html")
 
     async def _get_elsewhere(self, request: web.Request) -> web.Response:
         await self._record(request)

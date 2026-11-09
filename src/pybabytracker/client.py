@@ -7,6 +7,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from functools import partial
 from types import TracebackType
 from typing import Any, Self
 from urllib.parse import quote
@@ -29,6 +30,7 @@ DEFAULT_BASE_URL = "https://prodapp.babytrackers.com"
 DEFAULT_TIMEOUT = 30.0
 USER_AGENT = f"pybabytracker/{__version__}"
 MAX_PICTURE_BYTES = 20 * 1024 * 1024
+MAX_SEED_BYTES = 100 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,10 +229,30 @@ class BabyTrackerClient:
         if not is_plain_file_name(file_name):
             raise ValueError(f"not a picture file name: {file_name!r}")
         path = f"/account/picture/{quote(file_name, safe='')}"
-        status, content = await self._authorized(lambda: self._send_bytes(path), allow=(400, 404))
+        status, content = await self._authorized(
+            lambda: self._send_bytes(path, MAX_PICTURE_BYTES), allow=(400, 404)
+        )
         if 300 <= status < 400:
             raise ProtocolError(f"the service redirected the picture request (HTTP {status})")
         return None if status in (400, 404) else content
+
+    async def get_seed(self) -> bytes | None:
+        """Download the account's seed: a zip with a full copy of the account's database.
+
+        The transaction logs don't hold the whole history. Records from devices that have since
+        left the account are only in the seed, so read it before the logs (``read_seed`` and
+        ``SyncEngine.sync`` do this). Returns ``None`` when the account has no seed: an empty
+        body, or a ``400`` or ``404`` (expected, not yet seen).
+
+        A redirect raises ``ProtocolError`` and is not followed, and so does a body over
+        ``MAX_SEED_BYTES``.
+        """
+        status, content = await self._authorized(
+            lambda: self._send_bytes("/account/seed", MAX_SEED_BYTES), allow=(400, 404)
+        )
+        if 300 <= status < 400:
+            raise ProtocolError(f"the service redirected the seed request (HTTP {status})")
+        return content if status not in (400, 404) and content else None
 
     async def _request(
         self, method: str, path: str, body: Any = None, *, expect_json: bool = True
@@ -273,8 +295,9 @@ class BabyTrackerClient:
     async def _send(self, method: str, path: str, body: Any = None) -> tuple[int, str]:
         return await self._exchange(method, path, body, lambda response: response.text())
 
-    async def _send_bytes(self, path: str) -> tuple[int, bytes]:
-        return await self._exchange("GET", path, None, _read_capped, allow_redirects=False)
+    async def _send_bytes(self, path: str, cap: int) -> tuple[int, bytes]:
+        read = partial(_read_capped, cap=cap)
+        return await self._exchange("GET", path, None, read, allow_redirects=False)
 
     async def _exchange[T](
         self,
@@ -307,21 +330,20 @@ class BabyTrackerClient:
             raise NoResponseError(f"no answer from the service: {err!r}") from err
 
 
-async def _read_capped(response: aiohttp.ClientResponse) -> bytes:
-    """The body of ``response``, or ``ProtocolError`` when it's over ``MAX_PICTURE_BYTES``.
+async def _read_capped(response: aiohttp.ClientResponse, *, cap: int) -> bytes:
+    """The body of ``response``, or ``ProtocolError`` when it's over ``cap`` bytes.
 
     A redirect or an error status has its body skipped, since only the status is used.
     """
     if response.status >= 300:
         return b""
-    cap = MAX_PICTURE_BYTES
     if response.content_length is not None and response.content_length > cap:
-        raise ProtocolError(f"the picture is larger than {cap} bytes")
+        raise ProtocolError(f"the download is larger than {cap} bytes")
     body = bytearray()
     async for chunk in response.content.iter_chunked(64 * 1024):
         body += chunk
         if len(body) > cap:
-            raise ProtocolError(f"the picture is larger than {cap} bytes")
+            raise ProtocolError(f"the download is larger than {cap} bytes")
     return bytes(body)
 
 
