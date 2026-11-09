@@ -109,7 +109,7 @@ async def test_a_state_saved_before_the_account_id_was_kept_adopts_the_next_one(
     assert restored.account_id == 777
 
 
-async def test_a_new_engine_joins_the_new_group(
+async def test_a_new_client_and_a_new_engine_join_the_new_group(
     client: BabyTrackerClient, fake_server: FakeSyncServer, session: aiohttp.ClientSession
 ) -> None:
     fake_server.add_device(PHONE)
@@ -191,6 +191,33 @@ async def test_the_client_refuses_a_sign_in_to_a_different_group(
     assert client.account_id == 424242
     assert fake_server.calls("GET", "/account/device")[-1].path == "/account/device"
     assert len(fake_server.calls("GET", "/account/device")) == 1  # never retried
+
+
+async def test_a_reused_client_keeps_refusing_after_a_reset(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    fake_server.add_device(PHONE)
+    await SyncEngine(device_uuid=PROBE_UUID).sync(client)
+    reset_group(fake_server, 777)
+
+    for _ in range(2):
+        with pytest.raises(AccountChangedError):
+            await SyncEngine(device_uuid=PROBE_UUID).sync(client)
+
+
+async def test_a_refused_post_leaves_no_pending_write(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    fake_server.add_device(PHONE)
+    fake_server.add_transaction(PHONE, OP_ADD, payload_for("Diaper", rid(1)))
+    engine = SyncEngine(device_uuid=PROBE_UUID)
+    await engine.sync(client)
+    fake_server.reset_on_request = ("POST", "/account/transaction", 777)
+
+    with pytest.raises(AccountChangedError):
+        await engine.add_diaper(client, BABY_ID, DIAPER_WET, time=EVENT_TIME, timezone_offset=0)
+
+    assert not engine.to_dict()["pending"]
 
 
 async def test_an_explicit_sign_in_to_a_different_group_is_refused(

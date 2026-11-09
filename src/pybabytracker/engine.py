@@ -871,8 +871,8 @@ class SyncEngine:
         self._pending = _Pending(number, op_code, transaction)
         try:
             await target.post_transaction(op_code, number, transaction)
-        except AuthenticationError:
-            self._pending = None  # rejected outright: nothing landed
+        except (AuthenticationError, AccountChangedError):
+            self._pending = None  # refused before it was sent: nothing landed
             raise
         except BabyTrackerError as err:
             # Did it land anyway? Only the exact transaction under this number counts.
