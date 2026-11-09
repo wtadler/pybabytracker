@@ -1072,11 +1072,10 @@ class SyncEngine:
     async def _read_seed(self, source: SyncSource) -> None:
         """Load the account's seed, once, if ``source`` can fetch it (``get_seed``).
 
-        A download that fails is warned about and tried again on the next sync; the logs still
-        sync meanwhile. A seed that downloads but can't be read, or that the client refuses (a
-        redirect, or over the size cap), is warned about and not tried again until a newer
-        ``SEED_FORMAT``. A rejected sign-in, or a sign-in to a different sync group, raises, as it
-        would for the logs.
+        A download that fails, or is redirected, is warned about and tried again on the next sync;
+        the logs still sync meanwhile. A seed that downloads but can't be read, or that is over
+        the client's size cap, is warned about and not tried again until a newer ``SEED_FORMAT``. A
+        rejected sign-in, or a sign-in to a different sync group, raises, as it would for the logs.
         """
         get_seed = getattr(source, "get_seed", None)
         if get_seed is None:
@@ -1086,7 +1085,7 @@ class SyncEngine:
         except (AuthenticationError, AccountChangedError):
             raise
         except DownloadRefusedError as err:
-            # A redirect or an oversize seed would come back the same way on every sync.
+            # An oversize seed would come back the same way on every sync.
             _LOGGER.warning(
                 "Can't download the account's seed, so older history is missing: %s", err
             )

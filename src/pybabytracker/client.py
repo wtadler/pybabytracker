@@ -31,7 +31,7 @@ DEFAULT_BASE_URL = "https://prodapp.babytrackers.com"
 DEFAULT_TIMEOUT = 30.0
 USER_AGENT = f"pybabytracker/{__version__}"
 MAX_PICTURE_BYTES = 20 * 1024 * 1024
-MAX_SEED_BYTES = 100 * 1024 * 1024
+MAX_SEED_BYTES = 64 * 1024 * 1024
 # A seed can be large, so it gets longer than other requests, as long as data keeps coming.
 SEED_TIMEOUT = 600.0
 
@@ -225,10 +225,10 @@ class BabyTrackerClient:
         file it doesn't have (seen for a photo's ".mp4" name), and ``404`` is expected, not yet
         seen, so both mean no file. Any other error status raises, as for the other calls.
 
-        A redirect raises ``DownloadRefusedError`` (a ``ProtocolError``) and is not followed, and
-        so does a body over
-        ``MAX_PICTURE_BYTES``. A name that is empty, only whitespace, not a string, or has a path
-        separator raises ``ValueError`` without a request: names come from other devices' records.
+        A redirect raises ``ProtocolError`` and is not followed. A body over ``MAX_PICTURE_BYTES``
+        raises ``DownloadRefusedError`` (a ``ProtocolError``). A name that is empty, only
+        whitespace, not a string, or has a path separator raises ``ValueError`` without a request:
+        names come from other devices' records.
         """
         if not is_plain_file_name(file_name):
             raise ValueError(f"not a picture file name: {file_name!r}")
@@ -237,9 +237,7 @@ class BabyTrackerClient:
             lambda: self._send_bytes(path, MAX_PICTURE_BYTES), allow=(400, 404)
         )
         if 300 <= status < 400:
-            raise DownloadRefusedError(
-                f"the service redirected the picture request (HTTP {status})"
-            )
+            raise ProtocolError(f"the service redirected the picture request (HTTP {status})")
         return None if status in (400, 404) else content
 
     async def get_seed(self) -> bytes | None:
@@ -250,17 +248,17 @@ class BabyTrackerClient:
         ``SyncEngine.sync`` do this). Returns ``None`` when the account has no seed: an empty
         body, or a ``400`` or ``404`` (expected, not yet seen).
 
-        A redirect raises ``DownloadRefusedError`` (a ``ProtocolError``) and is not followed, and
-        so does a body over
-        ``MAX_SEED_BYTES``. The download may take up to ``SEED_TIMEOUT`` seconds in all, but fails
-        if the service goes quiet for the client's usual request timeout.
+        A redirect raises ``ProtocolError`` and is not followed. A body over ``MAX_SEED_BYTES``
+        raises ``DownloadRefusedError`` (a ``ProtocolError``). The download may take up to
+        ``SEED_TIMEOUT`` seconds in all, but fails if the service goes quiet for the client's usual
+        request timeout.
         """
         limits = aiohttp.ClientTimeout(total=SEED_TIMEOUT, sock_read=self._timeout.total)
         status, content = await self._authorized(
             lambda: self._send_bytes("/account/seed", MAX_SEED_BYTES, limits), allow=(400, 404)
         )
         if 300 <= status < 400:
-            raise DownloadRefusedError(f"the service redirected the seed request (HTTP {status})")
+            raise ProtocolError(f"the service redirected the seed request (HTTP {status})")
         return content if status not in (400, 404) and content else None
 
     async def _request(

@@ -957,7 +957,7 @@ async def test_a_refused_download_is_warned_about_and_not_tried_again(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     source = SeedSource(seed_zip(Sleep=[activity(2, Duration=30)]))
-    source.fail = DownloadRefusedError("the service redirected the seed request (HTTP 302)")
+    source.fail = DownloadRefusedError("the download is larger than 1000 bytes")
     engine = SyncEngine()
 
     result = await engine.sync(source)
@@ -969,17 +969,18 @@ async def test_a_refused_download_is_warned_about_and_not_tried_again(
     assert "older history is missing" in caplog.text
 
 
-async def test_a_redirected_seed_through_the_client_is_not_tried_again(
+async def test_a_redirected_seed_is_tried_again_next_sync(
     client: BabyTrackerClient, fake_server: FakeSyncServer
 ) -> None:
+    """A redirect may be temporary and costs one small request, so it doesn't skip the seed."""
     fake_server.seed_redirect = "/elsewhere/seed.zip"
     engine = SyncEngine()
 
     await engine.sync(client)
     await engine.sync(client)
 
-    assert engine.seeded is True
-    assert len(fake_server.calls("GET", "/account/seed")) == 1
+    assert engine.seeded is False
+    assert len(fake_server.calls("GET", "/account/seed")) == 2
 
 
 async def test_a_seed_over_the_download_cap_is_not_tried_again(

@@ -26,7 +26,7 @@ class ProtocolError(BabyTrackerError):
 
 
 class DownloadRefusedError(ProtocolError):
-    """A download this library won't take: a redirect, or a body over its size cap."""
+    """A download this library won't take: a body over its size cap."""
 
 
 class AccountChangedError(BabyTrackerError):
