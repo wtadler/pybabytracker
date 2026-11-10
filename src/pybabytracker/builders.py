@@ -41,6 +41,8 @@ from .models import (
     UNIT_CENTIMETERS,
     UNIT_INCHES,
     UNIT_KILOGRAMS,
+    UNIT_CELSIUS,
+    UNIT_FAHRENHEIT,
     UNIT_MILLILITERS,
     UNIT_OUNCES,
     UNIT_POUNDS,
@@ -57,6 +59,7 @@ from .models import (
     Pumped,
     Record,
     Sleep,
+    Temperature,
     Vaccine,
     Volume,
     VolumeMeasure,
@@ -331,6 +334,47 @@ def draft_growth(
         )
 
     return Draft(Growth, build)
+
+
+# The temperatures a reading may be, by unit: a body's, with room to spare. A guard against a
+# Celsius number given as Fahrenheit (37 °F) or the reverse (98.6 °C).
+TEMPERATURE_RANGES = {UNIT_FAHRENHEIT: (86.0, 113.0), UNIT_CELSIUS: (30.0, 45.0)}
+
+
+def draft_temperature(
+    reading: Measurement,
+    *,
+    time: datetime | None,
+    timezone_offset: int | None,
+    note: str,
+) -> Draft[Temperature]:
+    """A temperature, written as the iPhone app syncs one: a ``TemperatureMeasure`` with
+    ``englishMeasure`` "true" for Fahrenheit and "false" for Celsius, the number as given."""
+    if not isinstance(reading, Measurement):
+        raise ValueError("temperature must be a Measurement(value, unit)")
+    if reading.unit not in TEMPERATURE_RANGES:
+        raise ValueError(f"unknown temperature unit {reading.unit!r}: use 'F' or 'C'")
+    value = reading.value
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+        raise ValueError("temperature must be a finite number")
+    low, high = TEMPERATURE_RANGES[reading.unit]
+    if not low <= value <= high:
+        raise ValueError(
+            f"a temperature in {reading.unit} must be from {low:g} to {high:g}, not {value:g}"
+        )
+    measure = {
+        "BCObjectType": "TemperatureMeasure",
+        "englishMeasure": "true" if reading.unit == UNIT_FAHRENHEIT else "false",
+        "value": _number(value),
+    }
+    event, tz, text = _common(time, timezone_offset, note)
+
+    def build(object_id: str, baby: Baby | None, timestamp: datetime) -> Temperature:
+        return Temperature(
+            **_base(object_id, baby, timestamp, event, tz, text), temperature=dict(measure)
+        )
+
+    return Draft(Temperature, build)
 
 
 def _usual_dose(selection: Mapping[str, Any]) -> int | float | None:

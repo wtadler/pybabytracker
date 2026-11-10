@@ -97,6 +97,7 @@ from .builders import (
     draft_pump,
     draft_sleep,
     draft_sleep_start,
+    draft_temperature,
     draft_vaccine,
     ended_sleep_payload,
     resolve_sleep_end,
@@ -145,6 +146,7 @@ from .models import (
     Pumped,
     Record,
     Sleep,
+    Temperature,
     UnknownRecord,
     Vaccine,
     VaccineSelection,
@@ -584,6 +586,28 @@ class SyncEngine:
             time=time,
             timezone_offset=timezone_offset,
             note=note,
+        )
+        return await self._add(target, baby_id, draft, object_id)
+
+    async def add_temperature(
+        self,
+        target: WriteTarget,
+        baby_id: str,
+        temperature: Measurement,
+        *,
+        time: datetime | None = None,
+        timezone_offset: int | None = None,
+        note: str = "",
+        object_id: str | None = None,
+    ) -> Temperature:
+        """Post a temperature, ``Measurement(value, "F")`` or ``Measurement(value, "C")``.
+
+        The number is written as given, with no conversion, and must be in
+        ``TEMPERATURE_RANGES`` for its unit, so a Celsius reading passed as Fahrenheit is
+        refused. The other arguments work as for ``add_diaper``.
+        """
+        draft = draft_temperature(
+            temperature, time=time, timezone_offset=timezone_offset, note=note
         )
         return await self._add(target, baby_id, draft, object_id)
 
