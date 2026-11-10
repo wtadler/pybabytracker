@@ -416,8 +416,8 @@ def draft_other_feed(
         raise ValueError(f"unit can't be longer than {MAX_UNIT_LENGTH} characters")
     if not isinstance(meal_id, str) or not meal_id.strip():
         raise ValueError("meal_id must be text")
-    # As the iPhone app embeds a food: typed, not new, and dated 1970, so this old copy never
-    # replaces a newer edit of the food on another phone.
+    # As the iPhone app embeds a food (in all 193 of its synced solid foods that name an added
+    # one): typed, not new, and dated 1970.
     embedded = {
         "BCObjectType": "OtherFeedSelection",
         **selection,
