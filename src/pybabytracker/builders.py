@@ -56,6 +56,7 @@ from .models import (
     Nursing,
     OtherActivity,
     OtherFeed,
+    OtherFeedSelection,
     Pump,
     Pumped,
     Record,
@@ -415,7 +416,14 @@ def draft_other_feed(
         raise ValueError(f"unit can't be longer than {MAX_UNIT_LENGTH} characters")
     if not isinstance(meal_id, str) or not meal_id.strip():
         raise ValueError("meal_id must be text")
-    embedded = dict(selection)
+    # As the iPhone app embeds a food: typed, not new, and dated 1970, so this old copy never
+    # replaces a newer edit of the food on another phone.
+    embedded = {
+        "BCObjectType": "OtherFeedSelection",
+        **selection,
+        "newFlage": "false",
+        "timestamp": _DESC_TIMESTAMP,
+    }
     written_unit = unit.strip()
     value = _number(amount)
     desc = {
@@ -436,6 +444,37 @@ def draft_other_feed(
         )
 
     return Draft(OtherFeed, build)
+
+
+# The longest name of a food added to the pick list, in characters.
+MAX_FOOD_NAME_LENGTH = 50
+
+
+def draft_food(name: str, *, bottle: bool) -> Draft[OtherFeedSelection]:
+    """A new food for the pick list, as both apps sync one: ``BCObjectType``, ``objectID``,
+    ``name``, ``bottle``, ``newFlage`` "true", and ``timestamp``, with no record fields.
+
+    ``bottle`` true offers it on the bottle screen as a drink. The name is written without
+    surrounding spaces.
+    """
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("a food's name must be text")
+    written = name.strip()
+    if len(written) > MAX_FOOD_NAME_LENGTH:
+        raise ValueError(f"a food's name can't be longer than {MAX_FOOD_NAME_LENGTH} characters")
+    if not isinstance(bottle, bool):
+        raise ValueError("bottle must be True or False")
+
+    def build(object_id: str, baby: Baby | None, timestamp: datetime) -> OtherFeedSelection:
+        return OtherFeedSelection(
+            object_id=object_id,
+            name=written,
+            bottle="true" if bottle else "false",
+            new_flag="true",
+            timestamp=timestamp,
+        )
+
+    return Draft(OtherFeedSelection, build)
 
 
 def _usual_dose(selection: Mapping[str, Any]) -> int | float | None:

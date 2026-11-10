@@ -192,6 +192,19 @@ class InvalidSelectionNameError(ValidationError, ValueError):
         self.value = value
 
 
+class SelectionExistsError(ValidationError):
+    """A new pick-list entry was refused because one of that name is already on the list.
+
+    ``what`` says which list ("food"); ``object_id`` is the existing entry's, to use instead.
+    """
+
+    def __init__(self, what: str, name: str, object_id: str) -> None:
+        super().__init__(f"there is already a {what} named {name!r} ({object_id})")
+        self.what = what
+        self.name = name
+        self.object_id = object_id
+
+
 class AmbiguousSelectionError(ValidationError):
     """A name matches more than one entry of a pick list, so it can't say which is meant.
 

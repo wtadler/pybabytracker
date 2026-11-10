@@ -90,6 +90,7 @@ from .builders import (
     draft_activity,
     draft_bottle,
     draft_diaper,
+    draft_food,
     draft_growth,
     draft_medication,
     draft_milestone,
@@ -116,6 +117,7 @@ from .exceptions import (
     ObjectIdInUseError,
     ProtocolError,
     RecordNotFoundError,
+    SelectionExistsError,
     TimerNotRunningError,
     TransactionDecodeError,
     UnknownActivityError,
@@ -145,6 +147,7 @@ from .models import (
     Nursing,
     OtherActivity,
     OtherFeed,
+    OtherFeedSelection,
     Pump,
     Pumped,
     Record,
@@ -661,7 +664,8 @@ class SyncEngine:
         Foods eaten together share a meal: log the first, then pass its ``meal_id`` when
         logging the rest. It defaults to a new one. Bad input raises the errors
         ``add_milestone`` does (``UnknownFoodError`` for an unknown food) or ``ValueError``,
-        before any request; adding a new food to the pick list isn't supported yet. The other
+        before any request; ``add_food`` adds a new food to the pick list. The food is embedded
+        as the iPhone app embeds one: ``newFlage`` "false" and the 1970 timestamp. The other
         arguments work as for ``add_diaper``.
         """
         self._check_baby(target, baby_id)
@@ -682,14 +686,44 @@ class SyncEngine:
         resolve()
         return await self._add(target, baby_id, resolve, object_id)
 
+    async def add_food(
+        self,
+        target: WriteTarget,
+        name: str,
+        *,
+        bottle: bool = False,
+        object_id: str | None = None,
+    ) -> OtherFeedSelection:
+        """Add a food to the account's pick list, and apply it locally.
+
+        The food is posted as its own ``OtherFeedSelection``, as both apps do before the first
+        solid food that names it, so log that with ``add_other_feed`` and the returned record's
+        ``object_id``. ``bottle`` True offers it as a drink on the bottle screen. ``name`` is
+        written without surrounding spaces, at most ``MAX_FOOD_NAME_LENGTH`` characters. A name
+        already on the list (ignoring case, built-in or not) raises ``SelectionExistsError``
+        with that food's ID, and a bad name or ``bottle`` ``ValueError``, before any request.
+        The food belongs to the account, not a baby. ``object_id`` works as for ``add_diaper``.
+        """
+
+        def resolve() -> Draft[OtherFeedSelection]:
+            draft = draft_food(name, bottle=bottle)
+            wanted = name.strip().casefold()
+            for choice in self.food_choices():
+                if choice.name.strip().casefold() == wanted and choice.object_id != object_id:
+                    raise SelectionExistsError("food", name.strip(), choice.object_id)
+            return draft
+
+        resolve()
+        return await self._add(target, None, resolve, object_id)
+
     def food_choices(self) -> list[SelectionChoice]:
         """Every food a solid food record can name: the app's built-ins in its order, then
         added ones, by name. Copies are chosen as for ``milestone_choices``. A food added in the
-        app is embedded in each record of it as ``feedType``; one synced as its own
-        ``OtherFeedSelection`` record (kept raw) is offered too.
+        app syncs as its own ``OtherFeedSelection`` record and is embedded in each record of it
+        as ``feedType``; either makes it a choice.
         """
         synced = [
-            r.to_payload() for r in self._records.values() if r.record_type == "OtherFeedSelection"
+            r.to_payload() for r in self._records.values() if isinstance(r, OtherFeedSelection)
         ]
         embedded = [
             embedded_copy(r, r.feed_type)
