@@ -94,6 +94,7 @@ from .builders import (
     draft_medication,
     draft_milestone,
     draft_nursing,
+    draft_other_feed,
     draft_pump,
     draft_sleep,
     draft_sleep_start,
@@ -119,6 +120,7 @@ from .exceptions import (
     TransactionDecodeError,
     UnknownActivityError,
     UnknownBabyError,
+    UnknownFoodError,
     UnknownMedicineError,
     UnknownMilestoneError,
     UnknownVaccineError,
@@ -142,6 +144,7 @@ from .models import (
     MilestoneSelection,
     Nursing,
     OtherActivity,
+    OtherFeed,
     Pump,
     Pumped,
     Record,
@@ -159,6 +162,7 @@ from .models import (
 from .seed import Seed, read_seed
 from .selections import (
     BUILT_IN_ACTIVITIES,
+    BUILT_IN_FOODS,
     BUILT_IN_MILESTONES,
     BUILT_IN_VACCINES,
     SelectionChoice,
@@ -632,6 +636,73 @@ class SyncEngine:
         found = find_choice(self.activity_choices(), _wanted(activity, "activity"), "activity")
         if found is None:
             raise UnknownActivityError(f"no activity {activity!r} is built in or known from sync")
+        return found
+
+    async def add_other_feed(
+        self,
+        target: WriteTarget,
+        baby_id: str,
+        food: str,
+        *,
+        amount: float,
+        unit: str,
+        meal_id: str | None = None,
+        time: datetime | None = None,
+        timezone_offset: int | None = None,
+        note: str = "",
+        object_id: str | None = None,
+    ) -> OtherFeed:
+        """Post a solid food (or a drink such as water or juice), and apply it locally.
+
+        ``food`` is a name or ID from ``food_choices()``: one of the app's built-in foods
+        (``BUILT_IN_FOODS``) or one added in the app and known from sync, matched as for
+        ``add_milestone``. ``amount`` (more than zero, at most ``MAX_OTHER_FEED_AMOUNT``) counts
+        ``unit``, free text such as "Oz", "Pieces", or "Tsp" (surrounding spaces dropped).
+        Foods eaten together share a meal: log the first, then pass its ``meal_id`` when
+        logging the rest. It defaults to a new one. Bad input raises the errors
+        ``add_milestone`` does (``UnknownFoodError`` for an unknown food) or ``ValueError``,
+        before any request; adding a new food to the pick list isn't supported yet. The other
+        arguments work as for ``add_diaper``.
+        """
+        self._check_baby(target, baby_id)
+        meal = meal_id if meal_id is not None else str(uuid.uuid4()).upper()
+
+        def resolve() -> Draft[OtherFeed]:
+            choice = self.find_food(food)
+            return draft_other_feed(
+                choice.selection,
+                amount=amount,
+                unit=unit,
+                meal_id=meal,
+                time=time,
+                timezone_offset=timezone_offset,
+                note=note,
+            )
+
+        resolve()
+        return await self._add(target, baby_id, resolve, object_id)
+
+    def food_choices(self) -> list[SelectionChoice]:
+        """Every food a solid food record can name: the app's built-ins in its order, then
+        added ones, by name. Copies are chosen as for ``milestone_choices``. A food added in the
+        app is embedded in each record of it as ``feedType``; one synced as its own
+        ``OtherFeedSelection`` record (kept raw) is offered too.
+        """
+        synced = [
+            r.to_payload() for r in self._records.values() if r.record_type == "OtherFeedSelection"
+        ]
+        embedded = [
+            embedded_copy(r, r.feed_type)
+            for r in self._records.values()
+            if isinstance(r, OtherFeed)
+        ]
+        return merged_choices(BUILT_IN_FOODS, embedded, synced)
+
+    def find_food(self, food: str) -> SelectionChoice:
+        """The food with that ID, or else that name; errors as for ``find_milestone``."""
+        found = find_choice(self.food_choices(), _wanted(food, "food"), "food")
+        if found is None:
+            raise UnknownFoodError(f"no food {food!r} is built in or known from sync")
         return found
 
     async def add_medication(

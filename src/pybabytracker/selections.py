@@ -170,6 +170,25 @@ BUILT_IN_ACTIVITIES: tuple[SelectionChoice, ...] = tuple(
     for object_id, name in _BUILT_IN_ACTIVITIES
 )
 
+# The foods the app ships with, in its order: ID, name, and whether it's a drink offered on the
+# bottle screen (``bottle``) rather than a solid.
+_BUILT_IN_FOODS: tuple[tuple[str, str, bool], ...] = (
+    ("EasyLogSeed6136db30-8c55-11e2-9e96-0800200c9a66", "Cereal", False),
+    ("EasyLogSeed69ff6430-8c55-11e2-9e96-0800200c9a66", "Veggies", False),
+    ("EasyLogSeed72504c30-8c55-11e2-9e96-0800200c9a66", "Fruit", False),
+    ("EasyLogSeed7ad367c0-8c55-11e2-9e96-0800200c9a66", "Meat", False),
+    ("EasyLogSeed84962f40-8c55-11e2-9e96-0800200c9a66", "Finger Foods", False),
+    ("EasyLogSeed8cdabb30-8c55-11e2-9e96-0800200c9a66", "Vitamins", False),
+    ("EasyLogSeed9500c2a0-8c55-11e2-9e96-0800200c9a66", "Water", True),
+    ("EasyLogSeed9c31bbb0-8c55-11e2-9e96-0800200c9a66", "Juice", True),
+    ("EasyLogSeeda40424e0-8c55-11e2-9e96-0800200c9a66", "Milk", True),
+)
+
+BUILT_IN_FOODS: tuple[SelectionChoice, ...] = tuple(
+    _seed("OtherFeedSelection", object_id, name, "", bottle="true" if bottle else "false")
+    for object_id, name, bottle in _BUILT_IN_FOODS
+)
+
 BUILT_IN_VACCINES: tuple[SelectionChoice, ...] = tuple(
     _seed("VaccineSelection", *row, forAge=0) for row in _BUILT_IN_VACCINES
 )

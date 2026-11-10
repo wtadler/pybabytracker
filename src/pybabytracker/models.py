@@ -539,6 +539,15 @@ class OtherFeed(Record):
         return _selection_name(self.feed_type)
 
     @property
+    def meal_id(self) -> str | None:
+        """The meal this food was part of: the ``objectID`` of its ``desc``, which the foods
+        logged together share, or else the app database's ``descID``."""
+        meal = self.desc.get("objectID") if isinstance(self.desc, Mapping) else None
+        if isinstance(meal, str) and meal:
+            return meal
+        return self.desc_id
+
+    @property
     def quantity(self) -> float | None:
         """How many of ``unit`` were eaten, from the measure or a plain number."""
         if isinstance(self.amount, VolumeMeasure):

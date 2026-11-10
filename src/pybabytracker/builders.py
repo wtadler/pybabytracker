@@ -55,6 +55,7 @@ from .models import (
     Milestone,
     Nursing,
     OtherActivity,
+    OtherFeed,
     Pump,
     Pumped,
     Record,
@@ -376,6 +377,65 @@ def draft_temperature(
         )
 
     return Draft(Temperature, build)
+# The largest solid food amount: a guard against a typo, since the unit is free text.
+MAX_OTHER_FEED_AMOUNT = 1000
+# The longest unit, in characters.
+MAX_UNIT_LENGTH = 30
+# The timestamp the iPhone app gives a meal's description.
+_DESC_TIMESTAMP = "1970-01-01 00:00:00 +0000"
+
+
+def draft_other_feed(
+    selection: Mapping[str, Any],
+    *,
+    amount: float,
+    unit: str,
+    meal_id: str,
+    time: datetime | None,
+    timezone_offset: int | None,
+    note: str,
+) -> Draft[OtherFeed]:
+    """A solid food (or a drink other than milk), embedding the food as ``feedType``.
+
+    ``amount`` counts ``unit``, which is free text such as "Oz", "Pieces", or "Tsp". The iPhone
+    app writes the amount as a ``VolumeMeasure`` with ``englishMeasure`` "true" whatever the
+    unit, so this does too. ``desc`` is the meal: an unnamed ``FeedDescription`` whose
+    ``objectID`` is shared by the foods logged together, as the app does, so give each food of
+    one meal the same ``meal_id``.
+    """
+    if isinstance(amount, bool) or not isinstance(amount, int | float):
+        raise ValueError("amount must be a number")
+    if not math.isfinite(amount) or _number(amount) <= 0:
+        raise ValueError("amount must be more than zero")
+    if amount > MAX_OTHER_FEED_AMOUNT:
+        raise ValueError(f"amount can't be more than {MAX_OTHER_FEED_AMOUNT}")
+    if not isinstance(unit, str) or not unit.strip():
+        raise ValueError("unit must be text, such as 'Oz' or 'Pieces'")
+    if len(unit.strip()) > MAX_UNIT_LENGTH:
+        raise ValueError(f"unit can't be longer than {MAX_UNIT_LENGTH} characters")
+    if not isinstance(meal_id, str) or not meal_id.strip():
+        raise ValueError("meal_id must be text")
+    embedded = dict(selection)
+    written_unit = unit.strip()
+    value = _number(amount)
+    desc = {
+        "BCObjectType": "FeedDescription",
+        "newFlage": "true",
+        "objectID": meal_id.strip(),
+        "timestamp": _DESC_TIMESTAMP,
+    }
+    event, tz, text = _common(time, timezone_offset, note)
+
+    def build(object_id: str, baby: Baby | None, timestamp: datetime) -> OtherFeed:
+        return OtherFeed(
+            **_base(object_id, baby, timestamp, event, tz, text),
+            feed_type=dict(embedded),
+            desc=dict(desc),
+            amount=VolumeMeasure(value, "true"),
+            unit=written_unit,
+        )
+
+    return Draft(OtherFeed, build)
 
 
 def _usual_dose(selection: Mapping[str, Any]) -> int | float | None:
