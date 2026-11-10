@@ -34,6 +34,10 @@ DEFAULT_TIMEOUT = 30.0
 USER_AGENT = f"pybabytracker/{__version__}"
 MAX_PICTURE_BYTES = 20 * 1024 * 1024
 MAX_SEED_BYTES = 64 * 1024 * 1024
+# The multipart boundary the apps use for a picture upload.
+PICTURE_BOUNDARY = "__BABY_TRACKER_BOUNDARY____Photo__"
+# How a JPEG file starts (its SOI marker and the next marker's first byte).
+_JPEG_START = b"\xff\xd8\xff"
 # A seed can be large, so it gets longer than other requests, as long as data keeps coming.
 SEED_TIMEOUT = 600.0
 
@@ -246,6 +250,50 @@ class BabyTrackerClient:
             raise ProtocolError(f"the service redirected the picture request (HTTP {status})")
         return None if status in (400, 404) else content
 
+    async def upload_picture(self, file_name: str, data: bytes | bytearray) -> None:
+        """Upload a JPEG picture file, for a record's ``pictureNote`` to name.
+
+        ``file_name`` is the name other devices download it by: a photo is the picture's
+        ``fileName`` plus ".jpg", and its thumbnail is ``fileName`` plus "__thumbnail.jpg"
+        (``Picture.file`` and ``Picture.thumbnail_file``). The apps upload both, and the files
+        before the record that names them, since other devices fetch a picture as soon as they
+        merge its record. Uploading a name again replaces the file.
+
+        The request is the one the apps send: a multipart POST of the file in a ``picture``
+        field, with the name as its ``filename`` and type ``image/jpeg``. The apps expect
+        ``201``; any 2xx counts here. A 401 signs in again and sends it again, which is safe
+        because the file is named. No answer at all raises ``NoResponseError``, and the file may
+        or may not have landed, so upload it again.
+
+        ``data`` must be a JPEG (videos aren't supported) of at most ``MAX_PICTURE_BYTES``. A
+        name that isn't a plain file name, or has a quote or a line break, raises
+        ``ValueError`` without a request, as does data that isn't a JPEG or is too large.
+        """
+        if not is_plain_file_name(file_name) or any(c in file_name for c in '"\r\n'):
+            raise ValueError(f"not a picture file name: {file_name!r}")
+        if not isinstance(data, bytes | bytearray) or not data.startswith(_JPEG_START):
+            raise ValueError("a picture must be the bytes of a JPEG")
+        if len(data) > MAX_PICTURE_BYTES:
+            raise ValueError(f"a picture can't be more than {MAX_PICTURE_BYTES} bytes")
+        head = (
+            f"\r\n--{PICTURE_BOUNDARY}\r\n"
+            f'Content-Disposition: form-data; name="picture"; filename="{file_name}"\r\n'
+            "Content-Type: image/jpeg\r\n\r\n"
+        ).encode()
+        tail = f"\r\n--{PICTURE_BOUNDARY}--\r\n".encode()
+        body = head + bytes(data) + tail
+        content_type = f"multipart/form-data; boundary={PICTURE_BOUNDARY}"
+        await self._authorized(
+            lambda: self._exchange(
+                "POST",
+                "/account/picture",
+                None,
+                lambda response: response.text(),
+                data=body,
+                content_type=content_type,
+            )
+        )
+
     async def get_seed(self) -> bytes | None:
         """Download the account's seed: a zip with a full copy of the account's database.
 
@@ -323,7 +371,10 @@ class BabyTrackerClient:
         *,
         allow_redirects: bool = True,
         limits: aiohttp.ClientTimeout | None = None,
+        data: bytes | None = None,
+        content_type: str | None = None,
     ) -> tuple[int, T]:
+        """Send a request with a JSON ``body``, or else raw ``data`` of ``content_type``."""
         if self._session is None:
             self._session = aiohttp.ClientSession(
                 cookie_jar=aiohttp.CookieJar(unsafe=self._unsafe_cookie_jar)
@@ -332,8 +383,13 @@ class BabyTrackerClient:
             async with self._session.request(
                 method,
                 f"{self._base_url}{path}",
-                json=body,
-                headers={"User-Agent": USER_AGENT},
+                json=body if data is None else None,
+                data=data,
+                headers=(
+                    {"User-Agent": USER_AGENT}
+                    if content_type is None
+                    else {"User-Agent": USER_AGENT, "Content-Type": content_type}
+                ),
                 timeout=limits or self._timeout,
                 allow_redirects=allow_redirects,
             ) as response:

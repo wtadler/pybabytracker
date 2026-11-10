@@ -89,6 +89,10 @@ class FakeSyncServer:
         self.reset_on_request: tuple[str, str, int] | None = None
         # Picture files the service has, by file name.
         self.pictures: dict[str, bytes] = {}
+        # Each picture upload's Content-Type and raw body, in order.
+        self.uploads: list[tuple[str, bytes]] = []
+        # The status to answer a picture upload with (the live service answers 201).
+        self.upload_status = 201
         # The status for a picture it doesn't have: the live service answers 400.
         self.missing_picture_status = 400
         # A picture file name that answers with a redirect to this location.
@@ -146,6 +150,7 @@ class FakeSyncServer:
         app.router.add_get("/account/transaction/{uuid}/{since}", self._get_transactions)
         app.router.add_post("/account/transaction", self._post_transaction)
         app.router.add_get("/account/picture/{name}", self._get_picture)
+        app.router.add_post("/account/picture", self._post_picture)
         app.router.add_get("/account/seed", self._get_seed)
         app.router.add_get("/elsewhere/{name}", self._get_elsewhere)
         return app
@@ -158,7 +163,10 @@ class FakeSyncServer:
     async def _record(self, request: web.Request) -> None:
         body: Any = None
         if request.can_read_body:
-            body = json.loads(await request.text())
+            if request.content_type.startswith("multipart/"):
+                body = await request.read()
+            else:
+                body = json.loads(await request.text())
         self.requests.append(
             RecordedRequest(request.method, request.path, body, request.headers.get("User-Agent"))
         )
@@ -230,6 +238,28 @@ class FakeSyncServer:
             await stream.write_eof()
             return stream
         return web.Response(body=content, content_type="image/jpeg")
+
+    async def _post_picture(self, request: web.Request) -> web.Response:
+        """Store an upload framed exactly as the apps frame it, so a download returns it."""
+        if (rejected := await self._guard(request)) is not None:
+            return rejected
+        body = self.requests[-1].body
+        assert isinstance(body, bytes)
+        self.uploads.append((request.headers.get("Content-Type", ""), body))
+        if self.upload_status != 201:
+            return web.Response(status=self.upload_status, text="forced")
+        boundary = "__BABY_TRACKER_BOUNDARY____Photo__"
+        assert request.headers["Content-Type"] == f"multipart/form-data; boundary={boundary}"
+        head, _, rest = body.partition(b"\r\n\r\n")
+        lines = head.decode().split("\r\n")
+        assert lines[:2] == ["", f"--{boundary}"]
+        assert lines[3] == "Content-Type: image/jpeg"
+        prefix = 'Content-Disposition: form-data; name="picture"; filename="'
+        assert lines[2].startswith(prefix) and lines[2].endswith('"')
+        tail = f"\r\n--{boundary}--\r\n".encode()
+        assert rest.endswith(tail)
+        self.pictures[lines[2][len(prefix) : -1]] = rest[: -len(tail)]
+        return web.Response(status=201, text="")
 
     async def _get_seed(self, request: web.Request) -> web.Response:
         if (rejected := await self._guard(request)) is not None:

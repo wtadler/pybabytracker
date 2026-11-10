@@ -187,6 +187,21 @@ key.
   carries a `baby` still decodes (kept raw, not read). `engine.latest_pump()` is the newest pump
   on the account; `latest_records(baby_id)` never includes pumps.
 
+### Pictures
+
+- A record's pictures are `record.pictures`: a `Picture` for each live entry of its
+  `pictureNote`, with `file` (the photo, `fileName` plus ".jpg", or ".mp4" for a video) and
+  `thumbnail_file` (`fileName` plus "__thumbnail.jpg"). A baby's photo is `Baby.picture_file`.
+- `client.get_picture(name)` downloads one of those files, or returns `None` when the service
+  doesn't have it. Names come from other devices' records, so one with a path separator is
+  refused.
+- `client.upload_picture(name, data)` uploads a JPEG under that name, in the multipart form the
+  apps use. Upload a photo and its thumbnail before the record that names them, since other
+  devices download a picture as soon as they merge its record. Uploading a name again replaces
+  the file. A file over `MAX_PICTURE_BYTES` (20 MB), data that isn't a JPEG, or a name with a
+  path separator, quote, or line break raises `ValueError` before any request. Attaching an
+  uploaded picture to a record isn't supported yet.
+
 ### Sleep timers
 
 The app syncs a running sleep: an add with `duration` 0 at the start, then an update (opcode 1)
