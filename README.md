@@ -46,13 +46,22 @@ async with aiohttp.ClientSession() as session:
   because the account was reset: after a reset it refuses every device that joined before it,
   whatever the password, so it isn't an `AuthenticationError`. Join again as the app does, with a
   new device UUID, a new client and a new engine.
-- Records are typed (`Diaper`, `Sleep`, `Nursing`, and so on). A record type the library
+- Records are typed. Every type the apps sync is read: `Diaper`, `Formula`, `Pumped`,
+  `Nursing`, `Sleep`, `Pump`, `OtherFeed` (solids), `Medication`, `Medicine`, `Temperature`,
+  `Growth`, `Milestone`, `Vaccine`, `OtherActivity`, `Bath`, `Allergen`, `Sick`,
+  `HealthQuestion`, `DoctorVisit`, `Joy`, `Journal`, and `Baby`, plus the pick lists
+  `MedicationSelection`, `MilestoneSelection`, and `VaccineSelection`. The ones you can add are
+  listed under [Record types you can add](#record-types-you-can-add). A record type the library
   doesn't know stays raw as an `UnknownRecord` (a debug line is logged once per type).
   `Medication` is a medicine dose with the medicine embedded, and `NursingSession`, the Android
   app's timed nursing, is a `Nursing`. The Android app sends codes such as a diaper's `status` as
   strings of digits and `englishMeasure` as a JSON boolean; `numeric_code()` reads either form,
   and volumes read both. Decoding then encoding any
   payload returns the same JSON, including keys the library doesn't model.
+- Measurements read as `Measurement(value, unit)`: `Temperature.reading` (`"F"` or `"C"`), and
+  `Growth.weight_reading` (`"lb"` or `"kg"`, decimal pounds), `length_reading`, and
+  `head_reading` (`"in"` or `"cm"`). Each is `None` when the record has no such
+  measurement.
 
 ## Writes
 
