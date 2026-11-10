@@ -90,6 +90,7 @@ from .builders import (
     draft_activity,
     draft_bottle,
     draft_diaper,
+    draft_growth,
     draft_medication,
     draft_milestone,
     draft_nursing,
@@ -132,6 +133,8 @@ from .models import (
     Baby,
     Diaper,
     Formula,
+    Growth,
+    Measurement,
     Medication,
     MedicationSelection,
     Milestone,
@@ -553,6 +556,36 @@ class SyncEngine:
 
         resolve()
         return await self._add(target, baby_id, resolve, object_id)
+
+    async def add_growth(
+        self,
+        target: WriteTarget,
+        baby_id: str,
+        *,
+        weight: Measurement | None = None,
+        length: Measurement | None = None,
+        head: Measurement | None = None,
+        time: datetime | None = None,
+        timezone_offset: int | None = None,
+        note: str = "",
+        object_id: str | None = None,
+    ) -> Growth:
+        """Post a growth measurement: any of ``weight`` (``"lb"`` or ``"kg"``), ``length``, and
+        ``head`` (``"in"`` or ``"cm"``), each a ``Measurement``, at least one given.
+
+        Numbers are written as given, with no conversion. A weight in pounds is decimal pounds
+        (9 lb 4 oz is 9.25). Length and head must share a unit, and each must be in
+        ``GROWTH_RANGES``. The other arguments work as for ``add_diaper``.
+        """
+        draft = draft_growth(
+            weight=weight,
+            length=length,
+            head=head,
+            time=time,
+            timezone_offset=timezone_offset,
+            note=note,
+        )
+        return await self._add(target, baby_id, draft, object_id)
 
     def activity_choices(self) -> list[SelectionChoice]:
         """Every activity type a record can name: the app's built-ins in its order, then added

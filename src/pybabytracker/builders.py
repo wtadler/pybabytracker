@@ -38,11 +38,17 @@ from .models import (
     SIDE_LEFT,
     SIDE_NONE,
     SIDE_RIGHT,
+    UNIT_CENTIMETERS,
+    UNIT_INCHES,
+    UNIT_KILOGRAMS,
     UNIT_MILLILITERS,
     UNIT_OUNCES,
+    UNIT_POUNDS,
     Baby,
     Diaper,
     Formula,
+    Growth,
+    Measurement,
     Medication,
     Milestone,
     Nursing,
@@ -248,6 +254,83 @@ def draft_activity(
         )
 
     return Draft(OtherActivity, build)
+
+
+# What each growth measurement may be, by unit: from a premature newborn to a child, as a guard
+# against a typo or a measurement passed in the wrong field.
+GROWTH_RANGES: dict[str, dict[str, tuple[float, float]]] = {
+    "weight": {UNIT_POUNDS: (0.5, 100.0), UNIT_KILOGRAMS: (0.2, 45.0)},
+    "length": {UNIT_INCHES: (5.0, 60.0), UNIT_CENTIMETERS: (12.0, 150.0)},
+    "head": {UNIT_INCHES: (5.0, 30.0), UNIT_CENTIMETERS: (12.0, 75.0)},
+}
+_GROWTH_MEASURES = {"weight": "WeightMeasure", "length": "LengthMeasure", "head": "LengthMeasure"}
+_GROWTH_US_UNITS = {UNIT_POUNDS, UNIT_INCHES}
+
+
+def _growth_measure(name: str, reading: object) -> dict[str, Any]:
+    """A checked growth measurement as the iPhone app syncs it."""
+    if not isinstance(reading, Measurement):
+        raise ValueError(f"{name} must be a Measurement(value, unit)")
+    ranges = GROWTH_RANGES[name]
+    if reading.unit not in ranges:
+        units = " or ".join(repr(unit) for unit in ranges)
+        raise ValueError(f"unknown {name} unit {reading.unit!r}: use {units}")
+    value = reading.value
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+        raise ValueError(f"{name} must be a finite number")
+    low, high = ranges[reading.unit]
+    if not low <= value <= high:
+        raise ValueError(
+            f"a {name} in {reading.unit} must be from {low:g} to {high:g}, not {value:g}"
+        )
+    return {
+        "BCObjectType": _GROWTH_MEASURES[name],
+        "englishMeasure": "true" if reading.unit in _GROWTH_US_UNITS else "false",
+        "value": _number(value),
+    }
+
+
+def _copy(measure: dict[str, Any] | None) -> dict[str, Any] | None:
+    return dict(measure) if measure is not None else None
+
+
+def draft_growth(
+    *,
+    weight: Measurement | None,
+    length: Measurement | None,
+    head: Measurement | None,
+    time: datetime | None,
+    timezone_offset: int | None,
+    note: str,
+) -> Draft[Growth]:
+    """A growth measurement of any of weight, length, and head (at least one).
+
+    Each is a ``WeightMeasure`` or ``LengthMeasure`` with ``englishMeasure`` "true" for pounds
+    or inches, the number as given. A weight in pounds is decimal pounds, as the apps store it
+    (9 lb 4 oz is 9.25). One not taken is left out, as in the account seed, since the apps read
+    0 as not measured. The app keeps one unit for length and head, so they must share it.
+    """
+    given = {"weight": weight, "length": length, "head": head}
+    measures = {
+        name: _growth_measure(name, reading)
+        for name, reading in given.items()
+        if reading is not None
+    }
+    if not measures:
+        raise ValueError("give at least one of weight, length, and head")
+    if length is not None and head is not None and length.unit != head.unit:
+        raise ValueError("length and head must be in the same unit")
+    event, tz, text = _common(time, timezone_offset, note)
+
+    def build(object_id: str, baby: Baby | None, timestamp: datetime) -> Growth:
+        return Growth(
+            **_base(object_id, baby, timestamp, event, tz, text),
+            weight=_copy(measures.get("weight")),
+            length=_copy(measures.get("length")),
+            head=_copy(measures.get("head")),
+        )
+
+    return Draft(Growth, build)
 
 
 def _usual_dose(selection: Mapping[str, Any]) -> int | float | None:

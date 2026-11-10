@@ -1,7 +1,7 @@
 """Async client for the Nighp Baby Tracker sync service."""
 
 from ._version import __version__
-from .builders import MAX_ACTIVITY_MINUTES
+from .builders import GROWTH_RANGES, MAX_ACTIVITY_MINUTES
 from .client import BabyTrackerClient, Device, RawTransaction
 from .engine import ApplyResult, SyncEngine, SyncResult, SyncSource
 from .exceptions import (
@@ -109,6 +109,7 @@ from .times import format_time, from_unix, parse_time, standard_offset_seconds, 
 from .totals import DayTotals, LastBreast, day_totals, last_breast
 
 __all__ = [
+    "GROWTH_RANGES",
     "MAX_ACTIVITY_MINUTES",
     "MEDIA_PHOTO",
     "MEDIA_VIDEO",
