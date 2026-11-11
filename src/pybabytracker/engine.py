@@ -400,7 +400,6 @@ class SyncEngine:
         timezone_offset: int | None = None,
         note: str = "",
         object_id: str | None = None,
-        pictures: Sequence[NewPicture] = (),
     ) -> Diaper:
         """Post a new diaper for a baby known from sync, and apply it locally.
 
@@ -414,15 +413,17 @@ class SyncEngine:
         to another device's id apart from case raises ``ObjectIdInUseError``. Every ``add_*``
         method shares these rules. Bad input raises ``ValueError`` before any request.
 
-        ``pictures`` attaches photos, each a ``NewPicture(photo, thumbnail)`` of JPEG bytes, as
-        both apps attach them when a record is added. Every add for a baby's record takes it.
-        Before the record is posted, each photo is uploaded as a new uppercase UUID plus ".jpg"
+        ``add_milestone`` and ``add_activity`` take ``pictures``: photos, each a
+        ``NewPicture(photo, thumbnail)`` of JPEG bytes, as both apps attach them when a record is
+        added. Those are the record types the app's entry screens attach photos to (with a joy);
+        the others have no photo picker, so no picture is written to them. Before the record is
+        posted, each photo is uploaded as a new uppercase UUID plus ".jpg"
         and its thumbnail as that UUID plus "__thumbnail.jpg", and the record lists them in its
         ``pictureNote``. If an upload fails, the error is raised and nothing is posted; a retry
         uploads the pictures again under new names.
         """
         draft = draft_diaper(status, time=time, timezone_offset=timezone_offset, note=note)
-        return await self._add(target, baby_id, draft, object_id, pictures=pictures)
+        return await self._add(target, baby_id, draft, object_id)
 
     async def add_milestone(
         self,
@@ -502,7 +503,6 @@ class SyncEngine:
         timezone_offset: int | None = None,
         note: str = "",
         object_id: str | None = None,
-        pictures: Sequence[NewPicture] = (),
     ) -> Vaccine:
         """Post a vaccine the baby was given, and apply it locally.
 
@@ -521,7 +521,7 @@ class SyncEngine:
             )
 
         resolve()
-        return await self._add(target, baby_id, resolve, object_id, pictures=pictures)
+        return await self._add(target, baby_id, resolve, object_id)
 
     def vaccine_choices(self) -> list[SelectionChoice]:
         """Every vaccine a record can name: the app's built-ins in its order, then added ones.
@@ -594,7 +594,6 @@ class SyncEngine:
         timezone_offset: int | None = None,
         note: str = "",
         object_id: str | None = None,
-        pictures: Sequence[NewPicture] = (),
     ) -> Growth:
         """Post a growth measurement: any of ``weight`` (``"lb"`` or ``"kg"``), ``length``, and
         ``head`` (``"in"`` or ``"cm"``), each a ``Measurement``, at least one given.
@@ -611,7 +610,7 @@ class SyncEngine:
             timezone_offset=timezone_offset,
             note=note,
         )
-        return await self._add(target, baby_id, draft, object_id, pictures=pictures)
+        return await self._add(target, baby_id, draft, object_id)
 
     async def add_temperature(
         self,
@@ -623,7 +622,6 @@ class SyncEngine:
         timezone_offset: int | None = None,
         note: str = "",
         object_id: str | None = None,
-        pictures: Sequence[NewPicture] = (),
     ) -> Temperature:
         """Post a temperature, ``Measurement(value, "F")`` or ``Measurement(value, "C")``.
 
@@ -634,7 +632,7 @@ class SyncEngine:
         draft = draft_temperature(
             temperature, time=time, timezone_offset=timezone_offset, note=note
         )
-        return await self._add(target, baby_id, draft, object_id, pictures=pictures)
+        return await self._add(target, baby_id, draft, object_id)
 
     def activity_choices(self) -> list[SelectionChoice]:
         """Every activity type a record can name: the app's built-ins in its order, then added
@@ -672,7 +670,6 @@ class SyncEngine:
         timezone_offset: int | None = None,
         note: str = "",
         object_id: str | None = None,
-        pictures: Sequence[NewPicture] = (),
     ) -> OtherFeed:
         """Post a solid food (or a drink such as water or juice), and apply it locally.
 
@@ -703,7 +700,7 @@ class SyncEngine:
             )
 
         resolve()
-        return await self._add(target, baby_id, resolve, object_id, pictures=pictures)
+        return await self._add(target, baby_id, resolve, object_id)
 
     async def add_food(
         self,
@@ -775,7 +772,6 @@ class SyncEngine:
         timezone_offset: int | None = None,
         note: str = "",
         object_id: str | None = None,
-        pictures: Sequence[NewPicture] = (),
     ) -> Medication:
         """Post a dose of a medicine the baby was given, and apply it locally.
 
@@ -802,7 +798,7 @@ class SyncEngine:
             )
 
         resolve()
-        return await self._add(target, baby_id, resolve, object_id, pictures=pictures)
+        return await self._add(target, baby_id, resolve, object_id)
 
     def medicine_choices(self) -> list[SelectionChoice]:
         """Every medicine a dose can name, by name: ones synced as ``MedicationSelection``
@@ -835,11 +831,10 @@ class SyncEngine:
         timezone_offset: int | None = None,
         note: str = "",
         object_id: str | None = None,
-        pictures: Sequence[NewPicture] = (),
     ) -> Formula:
         """Post a formula bottle of ``volume`` (more than zero), at ``time`` (default now)."""
         draft = draft_bottle(Formula, volume, time=time, timezone_offset=timezone_offset, note=note)
-        return await self._add(target, baby_id, draft, object_id, pictures=pictures)
+        return await self._add(target, baby_id, draft, object_id)
 
     async def add_pumped(
         self,
@@ -851,11 +846,10 @@ class SyncEngine:
         timezone_offset: int | None = None,
         note: str = "",
         object_id: str | None = None,
-        pictures: Sequence[NewPicture] = (),
     ) -> Pumped:
         """Post a bottle of pumped milk. Takes what ``add_formula`` takes."""
         draft = draft_bottle(Pumped, volume, time=time, timezone_offset=timezone_offset, note=note)
-        return await self._add(target, baby_id, draft, object_id, pictures=pictures)
+        return await self._add(target, baby_id, draft, object_id)
 
     async def add_nursing(
         self,
@@ -870,7 +864,6 @@ class SyncEngine:
         timezone_offset: int | None = None,
         note: str = "",
         object_id: str | None = None,
-        pictures: Sequence[NewPicture] = (),
     ) -> Nursing:
         """Post a finished nursing session of whole minutes per side (at least one in total).
 
@@ -889,7 +882,7 @@ class SyncEngine:
             timezone_offset=timezone_offset,
             note=note,
         )
-        return await self._add(target, baby_id, draft, object_id, pictures=pictures)
+        return await self._add(target, baby_id, draft, object_id)
 
     async def add_sleep(
         self,
@@ -901,7 +894,6 @@ class SyncEngine:
         timezone_offset: int | None = None,
         note: str = "",
         object_id: str | None = None,
-        pictures: Sequence[NewPicture] = (),
     ) -> Sleep:
         """Post a finished sleep. ``start`` and ``end`` are aware, with ``end`` after ``start``.
 
@@ -909,7 +901,7 @@ class SyncEngine:
         half up (the capture stored about 30 seconds as 1), at least 1.
         """
         draft = draft_sleep(start=start, end=end, timezone_offset=timezone_offset, note=note)
-        return await self._add(target, baby_id, draft, object_id, pictures=pictures)
+        return await self._add(target, baby_id, draft, object_id)
 
     async def add_pump(
         self,

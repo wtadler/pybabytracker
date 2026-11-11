@@ -200,8 +200,9 @@ key.
   devices download a picture as soon as they merge its record. Uploading a name again replaces
   the file. A file over `MAX_PICTURE_BYTES` (20 MB), data that isn't a JPEG, or a name with a
   path separator, quote, or line break raises `ValueError` before any request.
-- Every add for a baby's record takes `pictures=[NewPicture(photo, thumbnail), ...]`, each the
-  bytes of a JPEG, as both apps attach photos when a record is added. The engine uploads each
+- `add_milestone` and `add_activity` take `pictures=[NewPicture(photo, thumbnail), ...]`, each
+  the bytes of a JPEG, as both apps attach photos when a record is added. Those are the record
+  types the app's entry screens attach photos to; the others have no photo picker. The engine uploads each
   photo as a new uppercase UUID plus ".jpg" and its thumbnail as that UUID plus
   "__thumbnail.jpg", then posts the record with a `pictureNote` entry for each, as the iPhone
   app writes one. Bad pictures raise `ValueError` before any request; a failed upload posts

@@ -2,28 +2,23 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 from factories import BABY_ID
 from fake_server import FakeSyncServer
 from selection_helpers import posted, seed, synced
-from test_medicine import IOS_MEDICINE
 
 from pybabytracker import (
-    DIAPER_WET,
     MEDIA_PHOTO,
-    UNIT_FAHRENHEIT,
-    UNIT_POUNDS,
     AccountChangedError,
     BabyTrackerClient,
     BabyTrackerConnectionError,
-    Measurement,
     NewPicture,
     SyncEngine,
-    Volume,
 )
 from pybabytracker import builders as builders_module
 
@@ -60,8 +55,8 @@ async def test_a_photo_is_uploaded_with_its_thumbnail_before_the_record(
     seed(fake_server)
     engine = await synced(client)
 
-    record = await engine.add_diaper(
-        client, BABY_ID, DIAPER_WET, time=EVENT_TIME, pictures=[NewPicture(PHOTO, THUMBNAIL)]
+    record = await engine.add_activity(
+        client, BABY_ID, "Tummy Time", time=EVENT_TIME, pictures=[NewPicture(PHOTO, THUMBNAIL)]
     )
 
     [entry] = posted(fake_server)[0]["pictureNote"]
@@ -86,8 +81,8 @@ async def test_the_entry_is_written_as_the_iphone_app_writes_one(
     seed(fake_server)
     engine = await synced(client)
 
-    record = await engine.add_diaper(
-        client, BABY_ID, DIAPER_WET, time=EVENT_TIME, pictures=[NewPicture(PHOTO, THUMBNAIL)]
+    record = await engine.add_activity(
+        client, BABY_ID, "Tummy Time", time=EVENT_TIME, pictures=[NewPicture(PHOTO, THUMBNAIL)]
     )
 
     [entry] = posted(fake_server)[0]["pictureNote"]
@@ -111,10 +106,10 @@ async def test_several_photos_get_their_own_names_in_order(
     engine = await synced(client)
     second = PHOTO + b"-2"
 
-    record = await engine.add_diaper(
+    record = await engine.add_activity(
         client,
         BABY_ID,
-        DIAPER_WET,
+        "Tummy Time",
         pictures=[NewPicture(PHOTO, THUMBNAIL), NewPicture(second, THUMBNAIL)],
     )
 
@@ -130,41 +125,24 @@ async def test_without_pictures_nothing_is_uploaded(
     seed(fake_server)
     engine = await synced(client)
 
-    await engine.add_diaper(client, BABY_ID, DIAPER_WET)
+    await engine.add_activity(client, BABY_ID, "Tummy Time")
 
     assert fake_server.uploads == []
     assert posted(fake_server)[0]["pictureNote"] == []
 
 
 Add = Callable[[SyncEngine, BabyTrackerClient, list[NewPicture]], Awaitable[Any]]
-START = EVENT_TIME - timedelta(minutes=30)
 ADDS: dict[str, Add] = {
-    "diaper": lambda e, c, p: e.add_diaper(c, BABY_ID, DIAPER_WET, pictures=p),
     "milestone": lambda e, c, p: e.add_milestone(c, BABY_ID, "First smile", pictures=p),
-    "vaccine": lambda e, c, p: e.add_vaccine(c, BABY_ID, "HepB", pictures=p),
     "activity": lambda e, c, p: e.add_activity(c, BABY_ID, "Tummy Time", pictures=p),
-    "growth": lambda e, c, p: e.add_growth(
-        c, BABY_ID, weight=Measurement(10, UNIT_POUNDS), pictures=p
-    ),
-    "temperature": lambda e, c, p: e.add_temperature(
-        c, BABY_ID, Measurement(99, UNIT_FAHRENHEIT), pictures=p
-    ),
-    "other_feed": lambda e, c, p: e.add_other_feed(
-        c, BABY_ID, "Fruit", amount=1, unit="Oz", pictures=p
-    ),
-    "medication": lambda e, c, p: e.add_medication(c, BABY_ID, "Test Drops", pictures=p),
-    "formula": lambda e, c, p: e.add_formula(c, BABY_ID, volume=Volume(4, "oz"), pictures=p),
-    "pumped": lambda e, c, p: e.add_pumped(c, BABY_ID, volume=Volume(4, "oz"), pictures=p),
-    "nursing": lambda e, c, p: e.add_nursing(c, BABY_ID, left_minutes=10, pictures=p),
-    "sleep": lambda e, c, p: e.add_sleep(c, BABY_ID, start=START, end=EVENT_TIME, pictures=p),
 }
 
 
 @pytest.mark.parametrize("kind", sorted(ADDS))
-async def test_every_add_for_a_babys_record_takes_pictures(
+async def test_the_adds_whose_app_screens_take_photos_take_pictures(
     client: BabyTrackerClient, fake_server: FakeSyncServer, kind: str
 ) -> None:
-    seed(fake_server, {**IOS_MEDICINE, "BCObjectType": "MedicationSelection"})
+    seed(fake_server)
     engine = await synced(client)
 
     record = await ADDS[kind](engine, client, [NewPicture(PHOTO, THUMBNAIL)])
@@ -174,6 +152,17 @@ async def test_every_add_for_a_babys_record_takes_pictures(
     assert fake_server.pictures[picture.file] == PHOTO
     [entry] = posted(fake_server)[-1]["pictureNote"]
     assert entry["activityID"] == record.object_id
+
+
+def test_only_those_adds_take_pictures() -> None:
+    """The Android app's entry screens attach photos only to a joy, a milestone, and an
+    activity; the rest have no photo picker, so no other add writes pictures."""
+    taking = sorted(
+        name
+        for name, method in inspect.getmembers(SyncEngine, inspect.iscoroutinefunction)
+        if name.startswith("add_") and "pictures" in inspect.signature(method).parameters
+    )
+    assert taking == ["add_activity", "add_milestone"]
 
 
 @pytest.mark.parametrize(
@@ -200,7 +189,7 @@ async def test_bad_pictures_are_refused_with_no_request(
     before = len(fake_server.requests)
 
     with pytest.raises(ValueError):
-        await engine.add_diaper(client, BABY_ID, DIAPER_WET, pictures=pictures)
+        await engine.add_activity(client, BABY_ID, "Tummy Time", pictures=pictures)
     assert len(fake_server.requests) == before
 
 
@@ -213,8 +202,8 @@ async def test_a_picture_over_the_limit_is_refused_with_no_request(
     monkeypatch.setattr(builders_module, "MAX_PICTURE_BYTES", len(PHOTO) - 1)
 
     with pytest.raises(ValueError):
-        await engine.add_diaper(
-            client, BABY_ID, DIAPER_WET, pictures=[NewPicture(PHOTO, THUMBNAIL)]
+        await engine.add_activity(
+            client, BABY_ID, "Tummy Time", pictures=[NewPicture(PHOTO, THUMBNAIL)]
         )
     assert len(fake_server.requests) == before
 
@@ -227,15 +216,15 @@ async def test_a_failed_upload_posts_no_record_and_leaves_nothing_pending(
     fake_server.upload_status = 500
 
     with pytest.raises(BabyTrackerConnectionError):
-        await engine.add_diaper(
-            client, BABY_ID, DIAPER_WET, pictures=[NewPicture(PHOTO, THUMBNAIL)]
+        await engine.add_activity(
+            client, BABY_ID, "Tummy Time", pictures=[NewPicture(PHOTO, THUMBNAIL)]
         )
     assert posted(fake_server) == []
     assert not engine.to_dict()["pending"]
 
     fake_server.upload_status = 201
-    record = await engine.add_diaper(
-        client, BABY_ID, DIAPER_WET, pictures=[NewPicture(PHOTO, THUMBNAIL)]
+    record = await engine.add_activity(
+        client, BABY_ID, "Tummy Time", pictures=[NewPicture(PHOTO, THUMBNAIL)]
     )
     assert [p["objectID"] for p in posted(fake_server)] == [record.object_id]
 
@@ -248,11 +237,11 @@ async def test_retrying_a_write_that_landed_uploads_nothing_again(
     object_id = "D0000000-0000-4000-8000-0000000000AA"
     pictures = [NewPicture(PHOTO, THUMBNAIL)]
 
-    first = await engine.add_diaper(
-        client, BABY_ID, DIAPER_WET, object_id=object_id, pictures=pictures
+    first = await engine.add_activity(
+        client, BABY_ID, "Tummy Time", object_id=object_id, pictures=pictures
     )
-    again = await engine.add_diaper(
-        client, BABY_ID, DIAPER_WET, object_id=object_id, pictures=pictures
+    again = await engine.add_activity(
+        client, BABY_ID, "Tummy Time", object_id=object_id, pictures=pictures
     )
 
     assert again == first
@@ -268,8 +257,8 @@ async def test_pictures_after_the_group_is_reset_upload_nothing(
     fake_server.sessions.clear()
 
     with pytest.raises(AccountChangedError):
-        await engine.add_diaper(
-            client, BABY_ID, DIAPER_WET, pictures=[NewPicture(PHOTO, THUMBNAIL)]
+        await engine.add_activity(
+            client, BABY_ID, "Tummy Time", pictures=[NewPicture(PHOTO, THUMBNAIL)]
         )
     assert fake_server.uploads == []
     assert posted(fake_server) == []
