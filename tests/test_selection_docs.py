@@ -33,7 +33,8 @@ def test_nothing_refers_to_the_apps_internals(banned: str) -> None:
     assert hits == []
 
 
-@pytest.mark.parametrize("model", [MilestoneSelection, VaccineSelection, MedicationSelection])
+# A medicine synced as its own transaction was captured on 2026-11-11, so it is no longer unseen.
+@pytest.mark.parametrize("model", [MilestoneSelection, VaccineSelection])
 def test_the_selection_transactions_are_marked_as_not_yet_seen(model: type) -> None:
     assert UNSEEN in (model.__doc__ or "")
 
@@ -51,3 +52,7 @@ def test_the_built_in_ids_say_which_were_checked_live() -> None:
 
 def test_the_readme_marks_the_selection_transactions_as_not_yet_seen() -> None:
     assert UNSEEN in (ROOT / "README.md").read_text()
+
+
+def test_a_medicine_is_no_longer_marked_as_not_yet_seen() -> None:
+    assert UNSEEN not in (MedicationSelection.__doc__ or "")
