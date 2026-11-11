@@ -118,6 +118,26 @@ async def test_a_bad_temperature_is_refused_with_no_request(
 
 @pytest.mark.parametrize(
     "reading",
+    [
+        Measurement(value, unit)
+        for unit, (low, high) in TEMPERATURE_RANGES.items()
+        for value in (round(low - 0.01, 2), round(high + 0.01, 2))
+    ],
+)
+async def test_just_outside_each_range_is_refused_with_no_request(
+    client: BabyTrackerClient, fake_server: FakeSyncServer, reading: Measurement
+) -> None:
+    seed(fake_server)
+    engine = await synced(client)
+    before = len(fake_server.requests)
+
+    with pytest.raises(ValueError):
+        await engine.add_temperature(client, BABY_ID, reading, time=EVENT_TIME)
+    assert len(fake_server.requests) == before
+
+
+@pytest.mark.parametrize(
+    "reading",
     [Measurement(value, unit) for unit, pair in TEMPERATURE_RANGES.items() for value in pair],
 )
 async def test_the_ends_of_each_range_are_allowed(

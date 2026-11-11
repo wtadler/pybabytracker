@@ -170,6 +170,28 @@ async def test_the_ends_of_each_range_are_allowed(
     assert getattr(record, f"{name}_reading") == reading
 
 
+@pytest.mark.parametrize(
+    ("name", "reading"),
+    [
+        (name, Measurement(value, unit))
+        for name, units in GROWTH_RANGES.items()
+        for unit, (low, high) in units.items()
+        for value in (round(low - 0.01, 2), round(high + 0.01, 2))
+    ],
+)
+async def test_just_outside_each_range_is_refused_with_no_request(
+    client: BabyTrackerClient, fake_server: FakeSyncServer, name: str, reading: Measurement
+) -> None:
+    seed(fake_server)
+    engine = await synced(client)
+    before = len(fake_server.requests)
+
+    measures: dict[str, Any] = {name: reading}
+    with pytest.raises(ValueError):
+        await engine.add_growth(client, BABY_ID, time=EVENT_TIME, **measures)
+    assert len(fake_server.requests) == before
+
+
 async def test_a_growth_after_the_group_is_reset_posts_nothing(
     client: BabyTrackerClient, fake_server: FakeSyncServer
 ) -> None:
