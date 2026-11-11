@@ -378,12 +378,15 @@ def draft_temperature(
         )
 
     return Draft(Temperature, build)
-# The largest solid food amount: a guard against a typo, since the unit is free text.
+
+
+# Guards against a typo, not limits the app is known to enforce. The largest solid food amount:
+# the unit is free text.
 MAX_OTHER_FEED_AMOUNT = 1000
-# The longest unit, in characters.
+# The longest unit, in characters (a guard).
 MAX_UNIT_LENGTH = 30
-# The timestamp the iPhone app gives a meal's description.
-_DESC_TIMESTAMP = "1970-01-01 00:00:00 +0000"
+# The timestamp the iPhone app gives a meal's description and an embedded food.
+_EMBEDDED_TIMESTAMP = "1970-01-01 00:00:00 +0000"
 
 
 def draft_other_feed(
@@ -416,13 +419,12 @@ def draft_other_feed(
         raise ValueError(f"unit can't be longer than {MAX_UNIT_LENGTH} characters")
     if not isinstance(meal_id, str) or not meal_id.strip():
         raise ValueError("meal_id must be text")
-    # As the iPhone app embeds a food (in all 193 of its synced solid foods that name an added
-    # one): typed, not new, and dated 1970.
+    # As the iPhone app embeds a food: typed, not new, and dated 1970.
     embedded = {
         "BCObjectType": "OtherFeedSelection",
         **selection,
         "newFlage": "false",
-        "timestamp": _DESC_TIMESTAMP,
+        "timestamp": _EMBEDDED_TIMESTAMP,
     }
     written_unit = unit.strip()
     value = _number(amount)
@@ -430,7 +432,7 @@ def draft_other_feed(
         "BCObjectType": "FeedDescription",
         "newFlage": "true",
         "objectID": meal_id.strip(),
-        "timestamp": _DESC_TIMESTAMP,
+        "timestamp": _EMBEDDED_TIMESTAMP,
     }
     event, tz, text = _common(time, timezone_offset, note)
 

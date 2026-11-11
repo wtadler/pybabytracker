@@ -541,7 +541,7 @@ class OtherFeed(Record):
     @property
     def meal_id(self) -> str | None:
         """The meal this food was part of: the ``objectID`` of its ``desc``, which the foods
-        logged together share, or else the app database's ``descID``."""
+        logged together share, or else its ``descID``."""
         meal = self.desc.get("objectID") if isinstance(self.desc, Mapping) else None
         if isinstance(meal, str) and meal:
             return meal
@@ -779,9 +779,9 @@ class MedicationSelection(Record):
 @dataclass(kw_only=True)
 class OtherFeedSelection(Record):
     """A food a user added to the app's pick list. Both apps sync a new food as a transaction
-    of its own, just before the first solid food that names it (seen for 8 foods, from iOS and
-    Android). ``bottle`` is "true" for a drink offered on the bottle screen; Android sends a
-    JSON bool. The built-in foods never sync: see ``BUILT_IN_FOODS``."""
+    of its own, just before the first solid food that names it (seen from iOS and Android).
+    ``bottle`` is "true" for a drink offered on the bottle screen; Android sends a JSON bool.
+    The built-in foods never sync: see ``BUILT_IN_FOODS``."""
 
     object_type: ClassVar[str] = "OtherFeedSelection"
 

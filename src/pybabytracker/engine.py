@@ -709,7 +709,12 @@ class SyncEngine:
             draft = draft_food(name, bottle=bottle)
             wanted = name.strip().casefold()
             for choice in self.food_choices():
-                if choice.name.strip().casefold() == wanted and choice.object_id != object_id:
+                # A retry names the food that landed, whatever the case of its id.
+                is_retry = (
+                    object_id is not None
+                    and self._resolve_id(object_id, (choice.object_id,)) is not None
+                )
+                if choice.name.strip().casefold() == wanted and not is_retry:
                     raise SelectionExistsError("food", name.strip(), choice.object_id)
             return draft
 
@@ -720,10 +725,11 @@ class SyncEngine:
         """Every food a solid food record can name: the app's built-ins in its order, then
         added ones, by name. Copies are chosen as for ``milestone_choices``. A food added in the
         app syncs as its own ``OtherFeedSelection`` record and is embedded in each record of it
-        as ``feedType``; either makes it a choice.
+        as ``feedType``; either makes it a choice, even a synced one this library can't decode.
+        A food only in the account's seed, not yet used by a record, is not.
         """
         synced = [
-            r.to_payload() for r in self._records.values() if isinstance(r, OtherFeedSelection)
+            r.to_payload() for r in self._records.values() if r.record_type == "OtherFeedSelection"
         ]
         embedded = [
             embedded_copy(r, r.feed_type)

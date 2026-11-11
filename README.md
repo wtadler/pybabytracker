@@ -144,7 +144,10 @@ key.
   own (`name`, `bottle`, `newFlage` "true", no record fields), posted before the first solid
   food that names it. A name already on the list, ignoring case, raises `SelectionExistsError`
   with the existing food's `object_id`. A solid food embeds its food as the iPhone app does:
-  typed, with `newFlage` "false" and the 1970 timestamp.
+  typed, with `newFlage` "false" and the 1970 timestamp (its other keys, such as `bottle`, stay
+  as synced). A food that exists only in the account's seed, not yet used by a record, or a
+  synced food the library can't decode, isn't a choice in `food_choices()` and isn't caught as a
+  duplicate by `add_food`.
 - Where several records carry a copy of one entry, a synced copy wins, then the copy in the
   newest record (by its `timestamp`, then its `time`), so a dose's default amount is the usual
   dose of the newest dose. A medicine without a usual dose that is a number above zero needs an

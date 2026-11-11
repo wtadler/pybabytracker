@@ -194,6 +194,34 @@ async def test_retrying_a_food_that_landed_returns_it_without_a_second_post(
     assert len(posted(fake_server)) == 1
 
 
+async def test_retrying_a_food_that_landed_with_the_id_in_another_case_returns_it(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    seed(fake_server)
+    engine = await synced(client)
+    object_id = "F0000000-0000-4000-8000-0000000000AA"
+
+    first = await engine.add_food(client, "Avocado", object_id=object_id)
+    again = await engine.add_food(client, "Avocado", object_id=object_id.lower())
+
+    assert again == first
+    assert len(posted(fake_server)) == 1
+
+
+async def test_a_synced_food_that_cannot_be_decoded_is_still_a_choice_and_a_duplicate(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    broken = {**IPHONE_FOOD, "timestamp": "not a time"}
+    seed(fake_server, broken)
+    engine = await synced(client)
+
+    assert not isinstance(engine.records[broken["objectID"]], OtherFeedSelection)
+    assert engine.find_food("oats").object_id == broken["objectID"]
+    with pytest.raises(SelectionExistsError):
+        await engine.add_food(client, "Oats")
+    assert posted(fake_server) == []
+
+
 async def test_a_food_after_the_group_is_reset_posts_nothing(
     client: BabyTrackerClient, fake_server: FakeSyncServer
 ) -> None:
