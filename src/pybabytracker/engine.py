@@ -575,9 +575,9 @@ class SyncEngine:
         """Post a growth measurement: any of ``weight`` (``"lb"`` or ``"kg"``), ``length``, and
         ``head`` (``"in"`` or ``"cm"``), each a ``Measurement``, at least one given.
 
-        Numbers are written as given, with no conversion. A weight in pounds is decimal pounds
-        (9 lb 4 oz is 9.25). Length and head must share a unit, and each must be in
-        ``GROWTH_RANGES``. The other arguments work as for ``add_diaper``.
+        Units are not converted and numbers are rounded to two decimals. A weight in pounds is
+        decimal pounds (9 lb 4 oz is 9.25). Length and head must share a unit, and each must be
+        in ``GROWTH_RANGES``. The other arguments work as for ``add_diaper``.
         """
         draft = draft_growth(
             weight=weight,
@@ -602,7 +602,7 @@ class SyncEngine:
     ) -> Temperature:
         """Post a temperature, ``Measurement(value, "F")`` or ``Measurement(value, "C")``.
 
-        The number is written as given, with no conversion, and must be in
+        The unit is not converted and the number is rounded to two decimals. It must be in
         ``TEMPERATURE_RANGES`` for its unit, so a Celsius reading passed as Fahrenheit is
         refused. The other arguments work as for ``add_diaper``.
         """

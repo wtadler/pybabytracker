@@ -183,3 +183,40 @@ async def test_a_growth_after_the_group_is_reset_posts_nothing(
             client, BABY_ID, weight=Measurement(10, UNIT_POUNDS), time=EVENT_TIME
         )
     assert posted(fake_server) == []
+
+
+@pytest.mark.parametrize(
+    ("name", "imperial", "metric", "per_unit"),
+    [
+        ("weight", UNIT_POUNDS, UNIT_KILOGRAMS, 0.45359237),
+        ("length", UNIT_INCHES, UNIT_CENTIMETERS, 2.54),
+        ("head", UNIT_INCHES, UNIT_CENTIMETERS, 2.54),
+    ],
+)
+def test_the_metric_ranges_match_the_imperial_ones(
+    name: str, imperial: str, metric: str, per_unit: float
+) -> None:
+    for us_bound, metric_bound in zip(
+        GROWTH_RANGES[name][imperial], GROWTH_RANGES[name][metric], strict=True
+    ):
+        assert metric_bound == pytest.approx(us_bound * per_unit, rel=0.02)
+
+
+async def test_numbers_are_rounded_to_two_decimals_and_whole_ones_written_as_integers(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    seed(fake_server)
+    engine = await synced(client)
+
+    await engine.add_growth(
+        client,
+        BABY_ID,
+        weight=Measurement(9.3125, UNIT_POUNDS),
+        length=Measurement(21.0, UNIT_INCHES),
+        time=EVENT_TIME,
+    )
+
+    [payload] = posted(fake_server)
+    assert payload["weight"]["value"] == 9.31
+    assert payload["length"]["value"] == 21
+    assert isinstance(payload["length"]["value"], int)

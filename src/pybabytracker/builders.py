@@ -38,11 +38,11 @@ from .models import (
     SIDE_LEFT,
     SIDE_NONE,
     SIDE_RIGHT,
+    UNIT_CELSIUS,
     UNIT_CENTIMETERS,
+    UNIT_FAHRENHEIT,
     UNIT_INCHES,
     UNIT_KILOGRAMS,
-    UNIT_CELSIUS,
-    UNIT_FAHRENHEIT,
     UNIT_MILLILITERS,
     UNIT_OUNCES,
     UNIT_POUNDS,
@@ -259,22 +259,20 @@ def draft_activity(
     return Draft(OtherActivity, build)
 
 
-# What each growth measurement may be, by unit: from a premature newborn to a child, as a guard
-# against a typo or a measurement passed in the wrong field.
-GROWTH_RANGES: dict[str, dict[str, tuple[float, float]]] = {
-    "weight": {UNIT_POUNDS: (0.5, 100.0), UNIT_KILOGRAMS: (0.2, 45.0)},
-    "length": {UNIT_INCHES: (5.0, 60.0), UNIT_CENTIMETERS: (12.0, 150.0)},
-    "head": {UNIT_INCHES: (5.0, 30.0), UNIT_CENTIMETERS: (12.0, 75.0)},
-}
-_GROWTH_MEASURES = {"weight": "WeightMeasure", "length": "LengthMeasure", "head": "LengthMeasure"}
-_GROWTH_US_UNITS = {UNIT_POUNDS, UNIT_INCHES}
-
-
-def _growth_measure(name: str, reading: object) -> dict[str, Any]:
-    """A checked growth measurement as the iPhone app syncs it."""
+def _checked_measure(
+    name: str,
+    reading: object,
+    ranges: Mapping[str, tuple[float, float]],
+    object_type: str,
+    english_units: set[str],
+) -> dict[str, Any]:
+    """A checked measurement as the iPhone app syncs one: ``object_type``, ``englishMeasure``
+    "true" for a unit in ``english_units`` and "false" otherwise, and the number rounded as
+    ``_number`` does. Refuses anything but a ``Measurement`` of a unit in ``ranges``, a finite
+    number (not a bool), within that unit's range.
+    """
     if not isinstance(reading, Measurement):
         raise ValueError(f"{name} must be a Measurement(value, unit)")
-    ranges = GROWTH_RANGES[name]
     if reading.unit not in ranges:
         units = " or ".join(repr(unit) for unit in ranges)
         raise ValueError(f"unknown {name} unit {reading.unit!r}: use {units}")
@@ -287,14 +285,22 @@ def _growth_measure(name: str, reading: object) -> dict[str, Any]:
             f"a {name} in {reading.unit} must be from {low:g} to {high:g}, not {value:g}"
         )
     return {
-        "BCObjectType": _GROWTH_MEASURES[name],
-        "englishMeasure": "true" if reading.unit in _GROWTH_US_UNITS else "false",
+        "BCObjectType": object_type,
+        "englishMeasure": "true" if reading.unit in english_units else "false",
         "value": _number(value),
     }
 
 
-def _copy(measure: dict[str, Any] | None) -> dict[str, Any] | None:
-    return dict(measure) if measure is not None else None
+# What each growth measurement may be, by unit: from a premature newborn to a child, as a guard
+# against a typo or a measurement passed in the wrong field. The metric bounds match the
+# imperial ones, so a reading near a limit is treated the same in either unit.
+GROWTH_RANGES: dict[str, dict[str, tuple[float, float]]] = {
+    "weight": {UNIT_POUNDS: (0.5, 100.0), UNIT_KILOGRAMS: (0.23, 45.0)},
+    "length": {UNIT_INCHES: (5.0, 60.0), UNIT_CENTIMETERS: (12.7, 152.0)},
+    "head": {UNIT_INCHES: (5.0, 30.0), UNIT_CENTIMETERS: (12.7, 76.0)},
+}
+_GROWTH_MEASURES = {"weight": "WeightMeasure", "length": "LengthMeasure", "head": "LengthMeasure"}
+_GROWTH_US_UNITS = {UNIT_POUNDS, UNIT_INCHES}
 
 
 def draft_growth(
@@ -309,13 +315,16 @@ def draft_growth(
     """A growth measurement of any of weight, length, and head (at least one).
 
     Each is a ``WeightMeasure`` or ``LengthMeasure`` with ``englishMeasure`` "true" for pounds
-    or inches, the number as given. A weight in pounds is decimal pounds, as the apps store it
-    (9 lb 4 oz is 9.25). One not taken is left out, as in the account seed, since the apps read
-    0 as not measured. The app keeps one unit for length and head, so they must share it.
+    or inches, the number rounded to two decimals (a whole number is written as an integer). A
+    weight in pounds is decimal pounds, as the apps store it (9 lb 4 oz is 9.25). One not taken
+    is left out, as in the account seed, since the apps read 0 as not measured. Length and head
+    share one unit in the apps, so they must share it here.
     """
     given = {"weight": weight, "length": length, "head": head}
     measures = {
-        name: _growth_measure(name, reading)
+        name: _checked_measure(
+            name, reading, GROWTH_RANGES[name], _GROWTH_MEASURES[name], _GROWTH_US_UNITS
+        )
         for name, reading in given.items()
         if reading is not None
     }
@@ -326,11 +335,13 @@ def draft_growth(
     event, tz, text = _common(time, timezone_offset, note)
 
     def build(object_id: str, baby: Baby | None, timestamp: datetime) -> Growth:
+        # Each record gets its own copy of every measure.
+        own = {name: dict(measure) for name, measure in measures.items()}
         return Growth(
             **_base(object_id, baby, timestamp, event, tz, text),
-            weight=_copy(measures.get("weight")),
-            length=_copy(measures.get("length")),
-            head=_copy(measures.get("head")),
+            weight=own.get("weight"),
+            length=own.get("length"),
+            head=own.get("head"),
         )
 
     return Draft(Growth, build)
@@ -338,7 +349,10 @@ def draft_growth(
 
 # The temperatures a reading may be, by unit: a body's, with room to spare. A guard against a
 # Celsius number given as Fahrenheit (37 °F) or the reverse (98.6 °C).
-TEMPERATURE_RANGES = {UNIT_FAHRENHEIT: (86.0, 113.0), UNIT_CELSIUS: (30.0, 45.0)}
+TEMPERATURE_RANGES: dict[str, tuple[float, float]] = {
+    UNIT_FAHRENHEIT: (86.0, 113.0),
+    UNIT_CELSIUS: (30.0, 45.0),
+}
 
 
 def draft_temperature(
@@ -349,24 +363,11 @@ def draft_temperature(
     note: str,
 ) -> Draft[Temperature]:
     """A temperature, written as the iPhone app syncs one: a ``TemperatureMeasure`` with
-    ``englishMeasure`` "true" for Fahrenheit and "false" for Celsius, the number as given."""
-    if not isinstance(reading, Measurement):
-        raise ValueError("temperature must be a Measurement(value, unit)")
-    if reading.unit not in TEMPERATURE_RANGES:
-        raise ValueError(f"unknown temperature unit {reading.unit!r}: use 'F' or 'C'")
-    value = reading.value
-    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
-        raise ValueError("temperature must be a finite number")
-    low, high = TEMPERATURE_RANGES[reading.unit]
-    if not low <= value <= high:
-        raise ValueError(
-            f"a temperature in {reading.unit} must be from {low:g} to {high:g}, not {value:g}"
-        )
-    measure = {
-        "BCObjectType": "TemperatureMeasure",
-        "englishMeasure": "true" if reading.unit == UNIT_FAHRENHEIT else "false",
-        "value": _number(value),
-    }
+    ``englishMeasure`` "true" for Fahrenheit and "false" for Celsius, the number rounded to two
+    decimals (a whole number is written as an integer)."""
+    measure = _checked_measure(
+        "temperature", reading, TEMPERATURE_RANGES, "TemperatureMeasure", {UNIT_FAHRENHEIT}
+    )
     event, tz, text = _common(time, timezone_offset, note)
 
     def build(object_id: str, baby: Baby | None, timestamp: datetime) -> Temperature:

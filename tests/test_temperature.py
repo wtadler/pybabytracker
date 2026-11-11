@@ -22,7 +22,7 @@ from pybabytracker import (
 )
 
 EVENT_TIME = datetime(2026, 11, 10, 3, 15, tzinfo=UTC)
-# The keys the iPhone app sends for a temperature (and baby), seen in two synced from it.
+# The keys the iPhone app sends for a temperature (and baby).
 TEMPERATURE_KEYS = {
     "BCObjectType",
     "temperature",
@@ -143,3 +143,18 @@ async def test_a_temperature_after_the_group_is_reset_posts_nothing(
             client, BABY_ID, Measurement(99, UNIT_FAHRENHEIT), time=EVENT_TIME
         )
     assert posted(fake_server) == []
+
+
+async def test_numbers_are_rounded_to_two_decimals_and_whole_ones_written_as_integers(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    seed(fake_server)
+    engine = await synced(client)
+
+    await engine.add_temperature(client, BABY_ID, Measurement(98.456, UNIT_FAHRENHEIT))
+    await engine.add_temperature(client, BABY_ID, Measurement(37.0, UNIT_CELSIUS))
+
+    first, second = posted(fake_server)
+    assert first["temperature"]["value"] == 98.46
+    assert second["temperature"]["value"] == 37
+    assert isinstance(second["temperature"]["value"], int)
