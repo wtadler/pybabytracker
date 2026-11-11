@@ -59,6 +59,9 @@ class FakeSyncServer:
         self.delay = 0.0
         # Status to return from POST /session (None means normal behavior).
         self.session_status: int | None = None
+        # The body of that forced reply, and its content type.
+        self.session_text = "forced"
+        self.session_content_type = "text/plain"
         # Devices refused at sign-in because they joined before the account was reset.
         self.reset_devices: set[str] = set()
         # Return at most this many log entries per request.
@@ -163,7 +166,11 @@ class FakeSyncServer:
     async def _post_session(self, request: web.Request) -> web.Response:
         await self._record(request)
         if self.session_status is not None:
-            return web.Response(status=self.session_status, text="forced")
+            return web.Response(
+                status=self.session_status,
+                text=self.session_text,
+                content_type=self.session_content_type,
+            )
         body = self.requests[-1].body
         if body["EmailAddress"] != self.email or body["Password"] != self.password:
             return self._json({"error": "bad credentials"}, status=401)

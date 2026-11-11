@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import partial
@@ -384,13 +385,17 @@ def _parse_entry(entry: Any) -> RawTransaction | None:
         return RawTransaction(sync_id, -1, "")
 
 
+_RESET_REPLY = re.compile(r"\baccount\s+has\s+been\s+reset\b", re.IGNORECASE)
+
+
 def _is_reset_reply(text: str) -> bool:
     """Whether a refused sign-in says the account was reset, not that the password is wrong.
 
     The service answers a device from before a reset with "Account has been reset. Please login
-    again".
+    again". Only that phrase counts, in any case and spacing: "Your password has been reset", say,
+    is still a rejected password.
     """
-    return "has been reset" in text.lower()
+    return _RESET_REPLY.search(text) is not None
 
 
 def _raise_for_status(status: int) -> None:

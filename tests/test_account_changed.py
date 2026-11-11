@@ -371,3 +371,86 @@ async def test_a_new_device_joins_after_a_reset(
     await engine.sync(joined)
 
     assert set(engine.records) == {rid(1)}
+
+
+# --- which refused sign-ins count as a reset ----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Account has been reset. Please login again",
+        "ACCOUNT HAS BEEN RESET. PLEASE LOGIN AGAIN",
+        "<html><body><p>Account has been reset.</p></body></html>",
+        "Account  has\n  been\treset. Please login again",
+    ],
+)
+async def test_a_refused_sign_in_that_says_the_account_was_reset_is_a_reset(
+    client: BabyTrackerClient, fake_server: FakeSyncServer, body: str
+) -> None:
+    fake_server.session_status = 401
+    fake_server.session_text = body
+    fake_server.session_content_type = "text/html"
+
+    with pytest.raises(AccountResetError):
+        await client.sign_in()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Your password has been reset. Please login again",
+        '{"error": "bad credentials"}',
+        "",
+    ],
+)
+async def test_a_refused_sign_in_that_does_not_say_the_account_was_reset_is_a_bad_password(
+    client: BabyTrackerClient, fake_server: FakeSyncServer, body: str
+) -> None:
+    fake_server.session_status = 401
+    fake_server.session_text = body
+
+    with pytest.raises(AuthenticationError) as caught:
+        await client.sign_in()
+    assert not isinstance(caught.value, AccountChangedError)
+
+
+async def test_a_plain_wrong_password_is_an_authentication_error(
+    session: aiohttp.ClientSession, fake_server: FakeSyncServer
+) -> None:
+    client = BabyTrackerClient(
+        fake_server.email,
+        "wrong",
+        PROBE_UUID,
+        "Test Device",
+        session=session,
+        base_url=fake_server.base_url,
+    )
+
+    with pytest.raises(AuthenticationError) as caught:
+        await client.sign_in()
+    assert not isinstance(caught.value, AccountChangedError)
+
+
+# --- the errors' fields and messages ------------------------------------------------------------
+
+
+def test_an_account_changed_error_can_carry_its_own_message() -> None:
+    err = AccountChangedError(1, 2, message="told otherwise")
+
+    assert str(err) == "told otherwise"
+    assert (err.saved, err.signed_in) == (1, 2)
+
+
+def test_an_account_changed_error_names_both_account_ids_by_default() -> None:
+    err = AccountChangedError(1, 2)
+
+    assert "AccountID 1 is now 2" in str(err)
+
+
+def test_an_account_reset_error_keeps_the_saved_id_and_says_the_device_is_refused() -> None:
+    err = AccountResetError(424242)
+
+    assert (err.saved, err.signed_in) == (424242, None)
+    assert "reset" in str(err)
+    assert "is now" not in str(err)

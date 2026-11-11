@@ -41,9 +41,12 @@ class AccountChangedError(BabyTrackerError):
     Records read before the sign-in are not undone.
     """
 
-    def __init__(self, saved: int | None, signed_in: int | None) -> None:
+    def __init__(
+        self, saved: int | None, signed_in: int | None, *, message: str | None = None
+    ) -> None:
         super().__init__(
-            f"the account's sync group changed (AccountID {saved} is now {signed_in}); "
+            message
+            or f"the account's sync group changed (AccountID {saved} is now {signed_in}); "
             "use a new client and a new engine to join it"
         )
         self.saved = saved
@@ -61,13 +64,12 @@ class AccountResetError(AccountChangedError):
     """
 
     def __init__(self, saved: int | None) -> None:
-        BabyTrackerError.__init__(
-            self,
-            "the account's sync group was reset in the app, so this device is refused; join "
-            "again with a new device UUID, a new client and a new engine",
+        super().__init__(
+            saved,
+            None,
+            message="the account's sync group was reset in the app, so this device is refused; "
+            "join again with a new device UUID, a new client and a new engine",
         )
-        self.saved = saved
-        self.signed_in = None
 
 
 class TransactionDecodeError(BabyTrackerError):
