@@ -156,7 +156,8 @@ class TimerNotRunningError(WriteError):
 
 
 class WrongRecordTypeError(WriteError):
-    """The record isn't of the type the write needs (ending a timer needs a Sleep)."""
+    """The record isn't of the type the write needs (ending a timer needs a Sleep; adding
+    photos needs a joy, a milestone, or an activity)."""
 
 
 class ValidationError(WriteError):

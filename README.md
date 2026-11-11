@@ -111,6 +111,7 @@ key.
 | `add_vaccine(client, baby_id, vaccine, ...)` | `Vaccine` | `vaccine` is a name or ID from `vaccine_choices()` |
 | `add_medication(client, baby_id, medicine, amount=None, ...)` | `Medication` | a dose; `medicine` is a name or ID from `medicine_choices()`, `amount` defaults to its usual dose |
 | `add_activity(client, baby_id, activity, duration=0, ...)` | `OtherActivity` | tummy time, a bath, and so on; `activity` is a name or ID from `activity_choices()` |
+| `add_joy(client, baby_id, note="", pictures=(), ...)` | `Joy` | a moment kept with its note and photos |
 | `add_growth(client, baby_id, weight=, length=, head=, ...)` | `Growth` | any of the three, each a `Measurement`, rounded to two decimals; weight in decimal `"lb"` (9 lb 4 oz is 9.25) or `"kg"`, length and head in one of `"in"` or `"cm"`; each must be in `GROWTH_RANGES` |
 | `add_temperature(client, baby_id, temperature, ...)` | `Temperature` | `Measurement(value, "F")` or `Measurement(value, "C")`, not converted and rounded to two decimals; must be in `TEMPERATURE_RANGES` |
 | `add_other_feed(client, baby_id, food, amount=, unit=, meal_id=None, ...)` | `OtherFeed` | a solid food (or water, juice); `food` is a name or ID from `food_choices()`, `amount` counts `unit` (free text: "Oz", "Pieces", "Tsp") |
@@ -208,6 +209,13 @@ key.
   app writes one. Bad pictures raise `ValueError` before any request; a failed upload posts
   nothing. The caller makes the thumbnail (any smaller JPEG of the photo): the library has no
   image dependency.
+- `add_pictures(client, object_id, pictures)` adds photos to a joy, milestone, or activity
+  already saved, whichever device made it, as both apps do when a photo is added while editing: an update
+  (opcode 1) carrying the record as last saved with only `pictureNote` (its entries, then the
+  new ones), `newFlage` "false", and `timestamp` changed. A deleted or unknown record raises
+  `RecordNotFoundError`; any other record (a diaper, a sleep, a baby) `WrongRecordTypeError`.
+- `add_joy(client, baby_id, note=, pictures=)` logs a joy, the app's record for a moment kept
+  with a note and photos. It has no fields of its own.
 
 ### Sleep timers
 

@@ -94,6 +94,7 @@ from .builders import (
     draft_diaper,
     draft_food,
     draft_growth,
+    draft_joy,
     draft_medication,
     draft_milestone,
     draft_nursing,
@@ -105,6 +106,7 @@ from .builders import (
     draft_vaccine,
     ended_sleep_payload,
     picture_entry,
+    pictured_payload,
     resolve_sleep_end,
 )
 from .client import Device, RawTransaction
@@ -142,6 +144,7 @@ from .models import (
     Diaper,
     Formula,
     Growth,
+    Joy,
     Measurement,
     Medication,
     MedicationSelection,
@@ -306,7 +309,8 @@ class SyncEngine:
         self._pending: _Pending | None = None
         self._created: set[str] = set()
         self._add_numbers: dict[str, int] = {}  # object_id -> number of this device's add
-        self._own_updates: set[str] = set()  # objects this device posted an update (an end) to
+        # Objects this device posted an update to (a sleep's end, or photos added).
+        self._own_updates: set[str] = set()
         self._logged_unknown_types: set[str] = set()
         self._account_id: int | None = None
         self._seeded = 0  # the seed format the account's seed was read at; 0 when it wasn't
@@ -424,6 +428,82 @@ class SyncEngine:
         """
         draft = draft_diaper(status, time=time, timezone_offset=timezone_offset, note=note)
         return await self._add(target, baby_id, draft, object_id)
+
+    async def add_joy(
+        self,
+        target: WriteTarget,
+        baby_id: str,
+        *,
+        time: datetime | None = None,
+        timezone_offset: int | None = None,
+        note: str = "",
+        object_id: str | None = None,
+        pictures: Sequence[NewPicture] = (),
+    ) -> Joy:
+        """Post a joy, a moment kept with its ``note`` and ``pictures``, at ``time`` (default
+        now). The arguments work as for ``add_diaper``."""
+        draft = draft_joy(time=time, timezone_offset=timezone_offset, note=note)
+        return await self._add(target, baby_id, draft, object_id, pictures=pictures)
+
+    async def add_pictures(
+        self, target: WriteTarget, object_id: str, pictures: Sequence[NewPicture]
+    ) -> Joy | Milestone | OtherActivity:
+        """Add photos to a joy, milestone, or activity already saved, whichever device made it:
+        post an update (opcode 1), as both apps do when a photo is added while editing one. Those
+        are the record types the app's entry screens attach photos to.
+
+        ``pictures`` (at least one) are uploaded as for an add's ``pictures``, then the update
+        carries the record as last saved with only ``pictureNote`` (its entries, then the new
+        ones), ``newFlage`` "false", and ``timestamp`` changed. The timestamp is the write time,
+        or one second past the stored one if that is ahead of this clock, so the update wins the
+        merge. Returns the record as updated.
+
+        Refused before any request: ``ValueError`` for bad or no pictures,
+        ``RecordNotFoundError`` for a record never seen or deleted, and ``WrongRecordTypeError``
+        for any other record (a diaper, a sleep, a baby, and so on). There is
+        no retry by id: if the update raised, check the record's ``pictures`` after the next
+        sync before adding the photos again. ``object_id`` can be in either case.
+        """
+        photos = check_pictures(pictures)
+        if not photos:
+            raise ValueError("give at least one picture")
+        async with self._lock:
+            self._check_can_write(target)
+            object_id = self._resolve_id(object_id, self._records, self._tombstones) or object_id
+            self._picturable(object_id)
+            number = await self._prepare(target)
+            record = self._picturable(object_id)  # as last saved, after the catch-up
+            names = [str(uuid.uuid4()).upper() for _ in photos]
+            for name, photo in zip(names, photos, strict=True):
+                await target.upload_picture(f"{name}.jpg", photo.photo)
+                await target.upload_picture(f"{name}__thumbnail.jpg", photo.thumbnail)
+            stamp = _now()
+            if record.timestamp is not None and record.timestamp >= stamp:
+                stamp = record.timestamp.astimezone(UTC) + timedelta(seconds=1)
+            entries = [picture_entry(name, record.object_id) for name in names]
+            updated = decode_payload(pictured_payload(record, entries, stamp))
+            assert isinstance(updated, Joy | Milestone | OtherActivity)
+            await self._send(target, number, OP_UPDATE, encode_transaction(updated))
+            return updated
+
+    def _picturable(self, object_id: str) -> Joy | Milestone | OtherActivity:
+        """The joy, milestone, or activity ``object_id`` names, or raise why photos can't be
+        added to it."""
+        if object_id in self.babies():
+            raise WrongRecordTypeError(
+                f"record {object_id} is a Baby, not a joy, milestone, or activity"
+            )
+        record = self._records.get(object_id)
+        if record is None:
+            if object_id in self._tombstones:
+                raise RecordNotFoundError(f"record {object_id} was deleted")
+            raise RecordNotFoundError(f"no record {object_id} is known from sync")
+        if not isinstance(record, Joy | Milestone | OtherActivity):
+            raise WrongRecordTypeError(
+                f"record {object_id} is a {record.record_type or 'record'}, "
+                "not a joy, milestone, or activity"
+            )
+        return record
 
     async def add_milestone(
         self,

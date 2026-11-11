@@ -162,7 +162,7 @@ def test_only_those_adds_take_pictures() -> None:
         for name, method in inspect.getmembers(SyncEngine, inspect.iscoroutinefunction)
         if name.startswith("add_") and "pictures" in inspect.signature(method).parameters
     )
-    assert taking == ["add_activity", "add_milestone"]
+    assert taking == ["add_activity", "add_joy", "add_milestone", "add_pictures"]
 
 
 @pytest.mark.parametrize(

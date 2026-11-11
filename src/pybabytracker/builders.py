@@ -52,6 +52,7 @@ from .models import (
     Diaper,
     Formula,
     Growth,
+    Joy,
     Measurement,
     Medication,
     Milestone,
@@ -226,6 +227,33 @@ def picture_entry(file_name: str, record_id: str) -> dict[str, Any]:
         "timestamp": "1970-01-01 00:00:00 +0000",
         "objectID": file_name,
     }
+
+
+def draft_joy(*, time: datetime | None, timezone_offset: int | None, note: str) -> Draft[Joy]:
+    """A joy: a moment kept with its note and photos. It has no fields of its own; both apps
+    send only the ones every record carries (captured 2026-11-11 from an iPhone and an Android
+    phone, each with a photo)."""
+    event, tz, text = _common(time, timezone_offset, note)
+
+    def build(object_id: str, baby: Baby | None, timestamp: datetime) -> Joy:
+        return Joy(**_base(object_id, baby, timestamp, event, tz, text))
+
+    return Draft(Joy, build)
+
+
+def pictured_payload(
+    record: Record, entries: list[dict[str, Any]], timestamp: datetime
+) -> dict[str, Any]:
+    """The update that adds photos to a saved record, as both apps post it when a photo is added
+    while editing: the record as last saved (key order and unknown keys kept), with only
+    ``pictureNote`` (its entries, then the new ones), ``newFlage`` "false", and ``timestamp``
+    changed."""
+    payload = record.to_payload()
+    existing = payload.get("pictureNote")
+    payload["pictureNote"] = [*(existing if isinstance(existing, list) else []), *entries]
+    payload["newFlage"] = "false"
+    payload["timestamp"] = format_time(timestamp.astimezone(UTC))
+    return payload
 
 
 def draft_diaper(
