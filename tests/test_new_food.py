@@ -222,6 +222,23 @@ async def test_a_synced_food_that_cannot_be_decoded_is_still_a_choice_and_a_dupl
     assert posted(fake_server) == []
 
 
+async def test_a_solid_food_naming_an_undecodable_synced_food_embeds_it_typed(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    broken = {**IPHONE_FOOD, "timestamp": "not a time"}
+    seed(fake_server, broken)
+    engine = await synced(client)
+
+    await engine.add_other_feed(client, BABY_ID, "oats", amount=1, unit="Oz")
+
+    [payload] = posted(fake_server)
+    embedded = payload["feedType"]
+    assert embedded["objectID"] == broken["objectID"]
+    assert embedded["name"] == "Oats"
+    assert embedded["BCObjectType"] == "OtherFeedSelection"
+    assert (embedded["newFlage"], embedded["timestamp"]) == ("false", SEED_TIME)
+
+
 async def test_a_food_after_the_group_is_reset_posts_nothing(
     client: BabyTrackerClient, fake_server: FakeSyncServer
 ) -> None:

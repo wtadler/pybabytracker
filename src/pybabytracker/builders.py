@@ -380,8 +380,8 @@ def draft_temperature(
     return Draft(Temperature, build)
 
 
-# Guards against a typo, not limits the app is known to enforce. The largest solid food amount:
-# the unit is free text.
+# The largest solid food amount: a guard against a typo, since the unit is free text, not a limit
+# the app is known to enforce.
 MAX_OTHER_FEED_AMOUNT = 1000
 # The longest unit, in characters (a guard).
 MAX_UNIT_LENGTH = 30
