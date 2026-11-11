@@ -37,7 +37,7 @@ MAX_SEED_BYTES = 64 * 1024 * 1024
 # The multipart boundary the apps use for a picture upload.
 PICTURE_BOUNDARY = "__BABY_TRACKER_BOUNDARY____Photo__"
 # How a JPEG file starts (its SOI marker and the next marker's first byte).
-_JPEG_START = b"\xff\xd8\xff"
+JPEG_START = b"\xff\xd8\xff"
 # A seed can be large, so it gets longer than other requests, as long as data keeps coming.
 SEED_TIMEOUT = 600.0
 
@@ -271,7 +271,7 @@ class BabyTrackerClient:
         """
         if not is_plain_file_name(file_name) or any(c in file_name for c in '"\r\n'):
             raise ValueError(f"not a picture file name: {file_name!r}")
-        if not isinstance(data, bytes | bytearray) or not data.startswith(_JPEG_START):
+        if not isinstance(data, bytes | bytearray) or not data.startswith(JPEG_START):
             raise ValueError("a picture must be the bytes of a JPEG")
         if len(data) > MAX_PICTURE_BYTES:
             raise ValueError(f"a picture can't be more than {MAX_PICTURE_BYTES} bytes")

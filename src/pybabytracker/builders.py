@@ -25,16 +25,18 @@ Conventions:
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, NamedTuple
 
+from .client import JPEG_START, MAX_PICTURE_BYTES
 from .exceptions import NoUsualDoseError
 from .models import (
     DIAPER_DIRTY,
     DIAPER_MIXED,
     DIAPER_WET,
+    MEDIA_PHOTO,
     SIDE_LEFT,
     SIDE_NONE,
     SIDE_RIGHT,
@@ -177,6 +179,53 @@ def _base(
     if baby is not None:
         common["baby"] = baby
     return common
+
+
+class NewPicture(NamedTuple):
+    """A photo to attach to a new record: the photo and its thumbnail, each the bytes of a JPEG.
+
+    Both apps upload a thumbnail of their own making with every photo, and other devices show it
+    in lists, so the caller supplies one (any smaller JPEG of the same photo).
+    """
+
+    photo: bytes
+    thumbnail: bytes
+
+
+def check_pictures(pictures: object) -> tuple[NewPicture, ...]:
+    """``pictures`` as a tuple, or ``ValueError`` unless it is a sequence of ``NewPicture``s whose
+    photo and thumbnail are each a JPEG of at most ``MAX_PICTURE_BYTES``."""
+    if isinstance(pictures, str | bytes | bytearray | NewPicture) or not isinstance(
+        pictures, Sequence
+    ):
+        raise ValueError("pictures must be a list of NewPicture(photo, thumbnail)")
+    checked = []
+    for picture in pictures:
+        if not isinstance(picture, NewPicture):
+            raise ValueError("each picture must be a NewPicture(photo, thumbnail)")
+        for name, data in (("photo", picture.photo), ("thumbnail", picture.thumbnail)):
+            if not isinstance(data, bytes | bytearray) or not data.startswith(JPEG_START):
+                raise ValueError(f"a picture's {name} must be the bytes of a JPEG")
+            if len(data) > MAX_PICTURE_BYTES:
+                raise ValueError(f"a picture's {name} can't be more than {MAX_PICTURE_BYTES} bytes")
+        checked.append(NewPicture(bytes(picture.photo), bytes(picture.thumbnail)))
+    return tuple(checked)
+
+
+def picture_entry(file_name: str, record_id: str) -> dict[str, Any]:
+    """One ``pictureNote`` entry, as the iPhone app writes it for a photo added with a record.
+    ``objectID`` and ``fileName`` are the same name, and the files are that name plus ".jpg" and
+    plus "__thumbnail.jpg"."""
+    return {
+        "activityID": record_id,
+        "BCObjectType": "Picture",
+        "mediaType": MEDIA_PHOTO,
+        "fileName": file_name,
+        "deleted": "false",
+        "newFlage": "true",
+        "timestamp": "1970-01-01 00:00:00 +0000",
+        "objectID": file_name,
+    }
 
 
 def draft_diaper(

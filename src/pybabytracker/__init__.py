@@ -7,6 +7,7 @@ from .builders import (
     MAX_FOOD_NAME_LENGTH,
     MAX_OTHER_FEED_AMOUNT,
     TEMPERATURE_RANGES,
+    NewPicture,
 )
 from .client import BabyTrackerClient, Device, RawTransaction
 from .engine import ApplyResult, SyncEngine, SyncResult, SyncSource
@@ -170,6 +171,7 @@ __all__ = [
     "NoUsualDoseError",
     "NotOwnRecordError",
     "NotSyncedError",
+    "NewPicture",
     "Nursing",
     "NursingSession",
     "NursingTimer",
