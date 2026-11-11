@@ -758,10 +758,10 @@ class MilestoneSelection(Record):
 @_register
 @dataclass(kw_only=True)
 class MedicationSelection(Record):
-    """A medicine on the app's pick list. It is expected to sync as a transaction of its own
-    (expected shape, not yet seen in synced data): a medicine has been seen only embedded in its
-    doses, as ``medicationSelection``. ``interval`` is in minutes, as iOS syncs it (the app takes
-    hours and syncs 555 as 33300); how Android types it is not yet seen. The prescription flag
+    """A medicine on the app's pick list. The iPhone app syncs a new one as a transaction of its
+    own just before the first dose (captured 2026-11-11), and every dose embeds it as
+    ``medicationSelection``. ``interval`` is in minutes, as iOS syncs it (the app takes
+    hours and syncs 555 as 33300); Android sends the same whole number. The prescription flag
     is ``prescription`` on Android and ``isPresciption`` on iOS; both stay as sent (the iOS one
     in ``extra``)."""
 

@@ -93,6 +93,7 @@ from .builders import (
     draft_food,
     draft_growth,
     draft_medication,
+    draft_medicine,
     draft_milestone,
     draft_nursing,
     draft_other_feed,
@@ -783,6 +784,53 @@ class SyncEngine:
 
         resolve()
         return await self._add(target, baby_id, resolve, object_id)
+
+    async def add_medicine(
+        self,
+        target: WriteTarget,
+        name: str,
+        *,
+        unit: str,
+        amount_per_time: float,
+        interval: timedelta,
+        prescription: bool = False,
+        description: str = "",
+        object_id: str | None = None,
+    ) -> MedicationSelection:
+        """Add a medicine to the account's pick list, and apply it locally.
+
+        The medicine is posted as its own ``MedicationSelection``, as the iPhone app does just
+        before the first dose of it, so log that with ``add_medication`` and the returned
+        record's ``object_id``. ``amount_per_time`` is the usual dose in ``unit`` (free text,
+        such as "ml" or "Drops"), and ``interval`` the time between doses, in whole hours as the
+        app takes them (written in minutes). A name already on the list (ignoring case)
+        raises ``SelectionExistsError`` with that medicine's ID, and bad input ``ValueError``,
+        before any request. The medicine belongs to the account, not a baby. ``object_id``
+        works as for ``add_diaper``.
+        """
+
+        def resolve() -> Draft[MedicationSelection]:
+            draft = draft_medicine(
+                name,
+                unit=unit,
+                amount_per_time=amount_per_time,
+                interval=interval,
+                prescription=prescription,
+                description=description,
+            )
+            wanted = name.strip().casefold()
+            for choice in self.medicine_choices():
+                # A retry names the medicine that landed, whatever the case of its id.
+                is_retry = (
+                    object_id is not None
+                    and self._resolve_id(object_id, (choice.object_id,)) is not None
+                )
+                if choice.name.strip().casefold() == wanted and not is_retry:
+                    raise SelectionExistsError("medicine", name.strip(), choice.object_id)
+            return draft
+
+        resolve()
+        return await self._add(target, None, resolve, object_id)
 
     def medicine_choices(self) -> list[SelectionChoice]:
         """Every medicine a dose can name, by name: ones synced as ``MedicationSelection``

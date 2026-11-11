@@ -52,6 +52,7 @@ from .models import (
     Growth,
     Measurement,
     Medication,
+    MedicationSelection,
     Milestone,
     Nursing,
     OtherActivity,
@@ -479,6 +480,81 @@ def draft_food(name: str, *, bottle: bool) -> Draft[OtherFeedSelection]:
     return Draft(OtherFeedSelection, build)
 
 
+# The longest name and unit of a medicine added to the pick list, in characters.
+MAX_MEDICINE_NAME_LENGTH = 50
+MAX_MEDICINE_UNIT_LENGTH = 30
+# The longest gap between doses. The app takes whole hours; an iPhone has synced 555.
+MAX_MEDICINE_INTERVAL = timedelta(hours=999)
+
+
+def draft_medicine(
+    name: str,
+    *,
+    unit: str,
+    amount_per_time: float,
+    interval: timedelta,
+    prescription: bool,
+    description: str,
+) -> Draft[MedicationSelection]:
+    """A new medicine for the pick list, as the iPhone app syncs one (captured 2026-11-11):
+    ``BCObjectType``, ``objectID``, ``name``, ``desc``, ``unit``, ``amountPerTime``,
+    ``interval`` in minutes, ``isPresciption`` (the app's spelling) "true" or "false",
+    ``newFlage`` "true", and ``timestamp``, with no record fields.
+
+    ``interval`` is the time between doses, a whole number of hours as the app takes it, at
+    most ``MAX_MEDICINE_INTERVAL``. ``amount_per_time`` is the usual dose in ``unit``, which is
+    free text such as "ml" or "Drops". Text is written without surrounding spaces.
+    """
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("a medicine's name must be text")
+    if len(name.strip()) > MAX_MEDICINE_NAME_LENGTH:
+        raise ValueError(
+            f"a medicine's name can't be longer than {MAX_MEDICINE_NAME_LENGTH} characters"
+        )
+    if not isinstance(unit, str) or not unit.strip():
+        raise ValueError("a medicine's unit must be text, such as 'ml' or 'Drops'")
+    if len(unit.strip()) > MAX_MEDICINE_UNIT_LENGTH:
+        raise ValueError(
+            f"a medicine's unit can't be longer than {MAX_MEDICINE_UNIT_LENGTH} characters"
+        )
+    if (
+        isinstance(amount_per_time, bool)
+        or not isinstance(amount_per_time, int | float)
+        or not math.isfinite(amount_per_time)
+        or _number(amount_per_time) <= 0
+    ):
+        raise ValueError("a medicine's usual dose must be a number more than zero")
+    if not isinstance(interval, timedelta):
+        raise ValueError("interval must be a timedelta, such as timedelta(hours=4)")
+    if interval <= timedelta(0) or interval > MAX_MEDICINE_INTERVAL:
+        raise ValueError(f"interval must be more than zero and at most {MAX_MEDICINE_INTERVAL}")
+    if interval % timedelta(hours=1):
+        raise ValueError("interval must be a whole number of hours, as the app takes it")
+    if not isinstance(prescription, bool):
+        raise ValueError("prescription must be True or False")
+    if not isinstance(description, str):
+        raise ValueError("a medicine's description must be text")
+    written_name, written_desc, written_unit = name.strip(), description.strip(), unit.strip()
+    usual = _number(amount_per_time)
+    minutes = int(interval / timedelta(minutes=1))
+    flag = "true" if prescription else "false"
+
+    def build(object_id: str, baby: Baby | None, timestamp: datetime) -> MedicationSelection:
+        return MedicationSelection(
+            object_id=object_id,
+            name=written_name,
+            desc=written_desc,
+            unit=written_unit,
+            amount_per_time=usual,
+            interval=minutes,
+            new_flag="true",
+            timestamp=timestamp,
+            extra={"isPresciption": flag},
+        )
+
+    return Draft(MedicationSelection, build)
+
+
 def _usual_dose(selection: Mapping[str, Any]) -> int | float | None:
     """A medicine's usual dose (``amountPerTime``), or ``None`` unless it is a number that is
     still above zero once written. Text, a bool, null, zero, and a non-finite number are not a
@@ -498,8 +574,14 @@ def draft_medication(
     note: str,
 ) -> Draft[Medication]:
     """A dose of a medicine: ``amount`` in its unit (default its usual dose, ``amountPerTime``),
-    with the medicine embedded as ``medicationSelection``."""
-    embedded = dict(selection)
+    with the medicine embedded as ``medicationSelection`` as the iPhone app embeds one: typed,
+    ``newFlage`` "false", and the 1970 timestamp (captured 2026-11-11)."""
+    embedded = {
+        "BCObjectType": "MedicationSelection",
+        **selection,
+        "newFlage": "false",
+        "timestamp": "1970-01-01 00:00:00 +0000",
+    }
     if amount is None:
         amount = _usual_dose(embedded)
         if amount is None:
