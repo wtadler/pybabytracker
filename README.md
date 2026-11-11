@@ -280,6 +280,8 @@ read only the `BT_TEST_*` credentials, and keep their device ID and engine state
 
 ## Develop
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for what belongs in the library.
+
 ```sh
 uv venv --python 3.12 && uv pip install -e ".[dev]"
 pytest && mypy && ruff check .
