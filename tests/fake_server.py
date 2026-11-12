@@ -148,6 +148,7 @@ class FakeSyncServer:
     def app(self) -> web.Application:
         app = web.Application()
         app.router.add_post("/session", self._post_session)
+        app.router.add_delete("/session", self._delete_session)
         app.router.add_get("/account/device", self._get_devices)
         app.router.add_get("/account/transaction/{uuid}/{since}", self._get_transactions)
         app.router.add_post("/account/transaction", self._post_transaction)
@@ -201,6 +202,18 @@ class FakeSyncServer:
         response = self._json({"AccountID": self.account_id})
         response.set_cookie("PHPSESSID", token)
         return response
+
+    async def _delete_session(self, request: web.Request) -> web.Response:
+        """End the caller's session, as the live service does: 200 with an empty body, or 401
+        "Unauthorized" when there is no such session (seen 2026-11-12)."""
+        await self._record(request)
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        if self.force_status is not None:
+            return web.Response(status=self.force_status, text="forced")
+        if self.sessions.pop(request.cookies.get("PHPSESSID", ""), None) is None:
+            return web.Response(status=401, text="Unauthorized")
+        return web.Response(status=200, text="")
 
     async def _guard(self, request: web.Request) -> web.Response | None:
         await self._record(request)

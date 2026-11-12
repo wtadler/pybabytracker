@@ -32,6 +32,9 @@ async with aiohttp.ClientSession() as session:
   this client: the service authenticates by cookie, so two accounts must not share a session (in
   Home Assistant, use `async_create_clientsession`). Without one, the client makes its own and
   closes it in `close()`.
+- `client.sign_out()` ends the session on the service (`DELETE /session`), as the app does when
+  it disconnects. A session that had already ended counts as signed out, and the client's next
+  call signs in again.
 - `AuthenticationError` means the credentials were rejected. `BabyTrackerConnectionError` means
   the service was unreachable or answered with a server error. A 401 mid-session triggers one
   sign-in and a retry before it becomes an `AuthenticationError`.

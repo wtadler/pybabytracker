@@ -174,6 +174,23 @@ class BabyTrackerClient:
         self._account_id = account_id
         return account_id
 
+    async def sign_out(self) -> None:
+        """End the session, as the app does when it disconnects: ``DELETE /session``.
+
+        The service answers ``200``, and ``401`` when the session had already ended; both leave
+        this client signed out, and a ``401`` here never signs in again. Nothing is sent when
+        the client isn't signed in. The client stays usable: its next call signs in. Any other
+        error status, or no answer, raises as for the other calls, and the client then still
+        counts as signed in.
+        """
+        async with self._sign_in_lock:
+            if not self._signed_in:
+                return
+            status, _ = await self._send("DELETE", "/session")
+            if status != 401:
+                _raise_for_status(status)
+            self._signed_in = False
+
     async def get_devices(self) -> list[Device]:
         """Every device in the sync group, with its last transaction number."""
         data = await self._request("GET", "/account/device")
