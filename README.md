@@ -89,6 +89,9 @@ The engine posts as its own device (`device_uuid`, which must match the client's
 - `delete_record` only deletes records this device added (`NotOwnRecordError`), and raises
   `RecordNotFoundError` if one is already deleted. Like the app, the delete sends the record as
   last saved with only `newFlage` set to `"false"`; its timestamp is not bumped.
+  With `any_device=True` it also deletes a record another device added, as the apps delete each
+  other's records, with the same payload: a baby's records and pumps, but not a baby or a
+  pick-list entry (`WrongRecordTypeError`), which the apps refuse to delete while in use.
 - Save `to_dict()` after every write, including one that raised: a pending post lives only in
   that state. Use one device ID per running process; two processes writing as one device can
   collide on a number while `LastSyncID` lags.

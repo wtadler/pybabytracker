@@ -184,6 +184,17 @@ from .selections import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# What ``delete_record`` won't delete for another device: the apps refuse to delete a baby or a
+# pick-list entry that is still in use, and an unknown type can't be checked.
+_NOT_DELETABLE_FROM_OTHERS = (
+    Baby,
+    MedicationSelection,
+    MilestoneSelection,
+    OtherFeedSelection,
+    VaccineSelection,
+    UnknownRecord,
+)
+
 STATE_VERSION = 4
 # How this library reads a seed. Raise it when a fix reads more out of seeds: state saved at an
 # older format reads the seed again (records merge idempotently).
@@ -1248,7 +1259,9 @@ class SyncEngine:
             await target.upload_picture(f"{name}__thumbnail.jpg", photo.thumbnail)
         return names
 
-    async def delete_record(self, target: WriteTarget, object_id: str) -> None:
+    async def delete_record(
+        self, target: WriteTarget, object_id: str, *, any_device: bool = False
+    ) -> None:
         """Post a delete of a record this device created, carrying the full record.
 
         The payload is the record exactly as last saved with ``newFlage`` set to ``"false"``;
@@ -1256,21 +1269,55 @@ class SyncEngine:
         another device created (or one never seen), and ``RecordNotFoundError`` if this
         device's record is already deleted. ``object_id`` matches whatever its case, and the delete
         is posted under the id the record has.
+
+        With ``any_device`` true, a record another device created can be deleted too, as the
+        apps delete each other's records (and this library's), with the same payload. That
+        covers a baby's records and pumps. A baby or a pick-list entry another device created
+        raises ``WrongRecordTypeError``, since the apps refuse to delete one that is still in
+        use; so does a record of a type the library doesn't know. A record never seen, or
+        already deleted, raises ``RecordNotFoundError``.
         """
         async with self._lock:
             self._check_can_write(target)
-            object_id = self._resolve_id(object_id, self._created, self._records) or object_id
+            object_id = (
+                self._resolve_id(object_id, self._created, self._records, self._tombstones)
+                or object_id
+            )
             if object_id not in self._created:
-                raise NotOwnRecordError(f"record {object_id} wasn't created by this device")
-            if object_id not in self._records:
+                if not any_device:
+                    raise NotOwnRecordError(f"record {object_id} wasn't created by this device")
+                self._deletable(object_id)
+                # Every device's log, not just this one's: the delete carries the whole record,
+                # so it must hold whatever another device saved since the last sync.
+                await self._catch_up(target)
+            elif object_id not in self._records:
                 raise RecordNotFoundError(f"record {object_id} is already deleted")
             number = await self._prepare(target)
-            record = self._records.get(object_id)
+            # The catch-up may have brought in a delete, or another device's newer version.
+            record = (
+                self._records.get(object_id)
+                if object_id in self._created
+                else self._deletable(object_id)
+            )
             if record is None:
                 raise RecordNotFoundError(f"record {object_id} is already deleted")
             payload = record.to_payload()
             payload["newFlage"] = "false"
             await self._send(target, number, OP_DELETE, encode_transaction(decode_payload(payload)))
+
+    def _deletable(self, object_id: str) -> Record:
+        """Another device's record ``object_id`` names, or raise why it can't be deleted."""
+        if object_id in self.babies():
+            raise WrongRecordTypeError(
+                f"record {object_id} is a Baby, which only the device that created it can delete"
+            )
+        record = self._saved_record(object_id)
+        if isinstance(record, _NOT_DELETABLE_FROM_OTHERS):
+            raise WrongRecordTypeError(
+                f"record {object_id} is a {record.record_type or 'record'}, which only the "
+                "device that created it can delete"
+            )
+        return record
 
     def _check_can_write(self, target: WriteTarget) -> None:
         if self._device_uuid is None:
