@@ -208,6 +208,7 @@ GOOD: dict[str, Any] = {
         {"amount_per_time": float("inf")},
         {"amount_per_time": 1e300},
         {"amount_per_time": 10**400},
+        {"amount_per_time": -(10**400)},
         {"interval": timedelta(0)},
         {"interval": timedelta(hours=-4)},
         {"interval": timedelta(minutes=90)},  # the app takes whole hours

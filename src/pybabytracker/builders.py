@@ -113,6 +113,14 @@ def _offset(moment: datetime, name: str) -> int:
     return int(offset.total_seconds())
 
 
+def _finite(value: float) -> bool:
+    """Whether a number is finite; false for an int too large for a float."""
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def _number(value: float) -> int | float:
     """A volume or dose as the app writes it: rounded to 2 decimals, an integer when whole."""
     rounded = round(float(value), 2)
@@ -125,7 +133,7 @@ def _checked(volume: object, name: str = "volume") -> Volume:
     if volume.unit not in (UNIT_OUNCES, UNIT_MILLILITERS):
         raise ValueError(f"unknown {name} unit {volume.unit!r}: use 'oz' or 'ml'")
     value = volume.value
-    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+    if isinstance(value, bool) or not isinstance(value, int | float) or not _finite(value):
         raise ValueError(f"{name} must be a finite number")
     if value < 0:
         raise ValueError(f"{name} can't be negative")
@@ -280,7 +288,7 @@ def _checked_measure(
         units = " or ".join(repr(unit) for unit in ranges)
         raise ValueError(f"unknown {name} unit {reading.unit!r}: use {units}")
     value = reading.value
-    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+    if isinstance(value, bool) or not isinstance(value, int | float) or not _finite(value):
         raise ValueError(f"{name} must be a finite number")
     low, high = ranges[reading.unit]
     if not low <= value <= high:
@@ -420,7 +428,7 @@ def draft_other_feed(
     """
     if isinstance(amount, bool) or not isinstance(amount, int | float):
         raise ValueError("amount must be a number")
-    if not math.isfinite(amount) or _number(amount) <= 0:
+    if not _finite(amount) or _number(amount) <= 0:
         raise ValueError("amount must be more than zero")
     if amount > MAX_OTHER_FEED_AMOUNT:
         raise ValueError(f"amount can't be more than {MAX_OTHER_FEED_AMOUNT}")
@@ -523,10 +531,9 @@ def draft_medicine(
     written_unit = _text(unit, "a medicine's unit", MAX_UNIT_LENGTH)
     if isinstance(amount_per_time, bool) or not isinstance(amount_per_time, int | float):
         raise ValueError("a medicine's usual dose must be a number")
-    # Compared before isfinite, which can't take an int too large for a float.
     if amount_per_time > MAX_MEDICINE_AMOUNT:
         raise ValueError(f"a medicine's usual dose can't be more than {MAX_MEDICINE_AMOUNT}")
-    if not math.isfinite(amount_per_time) or _number(amount_per_time) <= 0:
+    if not _finite(amount_per_time) or _number(amount_per_time) <= 0:
         raise ValueError("a medicine's usual dose must be a number more than zero")
     if not isinstance(interval, timedelta):
         raise ValueError("interval must be a timedelta, such as timedelta(hours=4)")
@@ -564,7 +571,7 @@ def _usual_dose(selection: Mapping[str, Any]) -> int | float | None:
     still above zero once written. Text, a bool, null, zero, and a non-finite number are not a
     usual dose: the caller must give an amount rather than have one guessed."""
     usual = _plain_number(selection.get("amountPerTime"))
-    if usual is None or not math.isfinite(usual) or _number(usual) <= 0:
+    if usual is None or not _finite(usual) or _number(usual) <= 0:
         return None
     return _number(usual)
 
@@ -593,7 +600,7 @@ def draft_medication(
         amount = _usual_dose(embedded)
         if amount is None:
             raise NoUsualDoseError(_selection_name(embedded))
-    if isinstance(amount, bool) or not isinstance(amount, int | float) or not math.isfinite(amount):
+    if isinstance(amount, bool) or not isinstance(amount, int | float) or not _finite(amount):
         raise ValueError("a dose's amount must be a finite number")
     if amount <= 0:
         raise ValueError("a dose's amount must be more than zero")

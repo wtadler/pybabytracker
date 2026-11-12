@@ -215,6 +215,7 @@ async def test_an_unknown_food_is_refused_with_no_request(
         {"amount": 0},
         {"amount": 0.001},  # zero once written
         {"amount": -1},
+        {"amount": -(10**400)},
         {"amount": math.nan},
         {"amount": math.inf},
         {"amount": True},
