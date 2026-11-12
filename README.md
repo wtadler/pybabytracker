@@ -89,6 +89,32 @@ The engine posts as its own device (`device_uuid`, which must match the client's
 - `delete_record` only deletes records this device added (`NotOwnRecordError`), and raises
   `RecordNotFoundError` if one is already deleted. Like the app, the delete sends the record as
   last saved with only `newFlage` set to `"false"`; its timestamp is not bumped.
+  With `any_device=True` it also deletes a record another device added, as the apps delete each
+  other's records, with the same payload: a baby's records and pumps, but not a baby or a
+  pick-list entry (`WrongRecordTypeError`), which the apps refuse to delete while in use.
+- `edit_record(client, object_id, time=, timezone_offset=, note=)` changes a saved record's
+  time or note, whichever device made it, as the apps do when a record is edited: an update
+  (opcode 1) carrying the record as last saved with only those keys, `newFlage` false, and
+  `timestamp` changed. It edits a baby's record or a pump, and posts nothing when the record
+  already has the values, so a retry is safe. A sleep's or nursing's length is kept when its
+  start moves.
+- `edit_diaper` (`status`, `amount`), `edit_bottle` (`volume`), `edit_nursing` (`left_minutes`,
+  `right_minutes`, `finish_side`), `edit_sleep` (`start`, `end`), `edit_temperature`
+  (`temperature`), `edit_growth` (`weight`, `length`, `head`), `edit_medication` (`amount`),
+  `edit_other_feed` (`amount`, `unit`), `edit_activity` (`duration`), and `edit_pump` (`amount`
+  or `left_volume`/`right_volume`, `left_minutes`, `right_minutes`, `finish_side`) change a
+  record's own fields the same way, with the time, zone, and note in the same update, and with the checks of
+  the matching `add_*`. A value not given is kept: a nursing's other side, and a sleep's end
+  when its start moves (so it gets longer or shorter). When a nursing's minutes change, the keys
+  an iPhone's timer left on it are dropped, as the iPhone app drops them; an Android timer's
+  `NursingSession` keeps its minutes. The medicine, food, or activity type a record embeds
+  can't be changed by an edit: delete the record and add another.
+- `edit_baby(client, baby_id, name=, birth=, due=, boy=, photo=)` changes a baby with an update
+  of its `Baby` record, as the iPhone app does. A `photo` (JPEG bytes) is uploaded first as a new
+  uppercase UUID plus ".jpg" and again plus "_l.jpg" (the landscape copy, `landscape_photo` when
+  given), and becomes the baby's `pictureName`. Records added afterwards embed the edited baby.
+  A baby known only from the copies its records embed raises `RecordNotFoundError`: those can
+  be partial, and after a seed read the baby's own record is there.
 - Save `to_dict()` after every write, including one that raised: a pending post lives only in
   that state. Use one device ID per running process; two processes writing as one device can
   collide on a number while `LastSyncID` lags.
@@ -101,7 +127,7 @@ key.
 
 | Method | Writes | Notes |
 |---|---|---|
-| `add_diaper(client, baby_id, status, ...)` | `Diaper` | `DIAPER_WET`, `DIAPER_DIRTY`, `DIAPER_MIXED` |
+| `add_diaper(client, baby_id, status, amount=DIAPER_AMOUNT_NORMAL, ...)` | `Diaper` | `DIAPER_WET`, `DIAPER_DIRTY`, `DIAPER_MIXED`; `amount` is one of `DIAPER_AMOUNTS` (none, light, normal, heavy, overflow, not set) |
 | `add_formula(client, baby_id, volume=, ...)` | `Formula` | volume more than zero |
 | `add_pumped(client, baby_id, volume=, ...)` | `Pumped` | a bottle of pumped milk |
 | `add_nursing(client, baby_id, left_minutes=, right_minutes=, ...)` | `Nursing` | a finished session |
@@ -111,6 +137,9 @@ key.
 | `add_vaccine(client, baby_id, vaccine, ...)` | `Vaccine` | `vaccine` is a name or ID from `vaccine_choices()` |
 | `add_medication(client, baby_id, medicine, amount=None, ...)` | `Medication` | a dose; `medicine` is a name or ID from `medicine_choices()`, `amount` defaults to its usual dose |
 | `add_activity(client, baby_id, activity, duration=0, ...)` | `OtherActivity` | tummy time, a bath, and so on; `activity` is a name or ID from `activity_choices()` |
+| `add_activity_type(client, name)` | `OtherActivityDescription` | a new activity type for the pick list, such as "Bath"; belongs to the account, so no `baby_id` |
+| `add_milestone_type(client, name)` | `MilestoneSelection` | a new milestone for the pick list, for every baby |
+| `add_vaccine_type(client, name, description="")` | `VaccineSelection` | a new vaccine for the pick list |
 | `add_joy(client, baby_id, note="", pictures=(), ...)` | `Joy` | a moment kept with its note and photos, at least one of the two |
 | `add_growth(client, baby_id, weight=, length=, head=, ...)` | `Growth` | any of the three, each a `Measurement`, rounded to two decimals; weight in decimal `"lb"` (9 lb 4 oz is 9.25) or `"kg"`, length and head in one of `"in"` or `"cm"`; each must be in `GROWTH_RANGES` |
 | `add_temperature(client, baby_id, temperature, ...)` | `Temperature` | `Measurement(value, "F")` or `Measurement(value, "C")`, not converted and rounded to two decimals; must be in `TEMPERATURE_RANGES` |
@@ -126,8 +155,10 @@ key.
   entries `AmbiguousSelectionError` naming their IDs, so pass the ID; all before any request. The three unknown-entry errors share the base
   `UnknownSelectionError` (with `.what`), and a dose with no `amount` for a medicine that has no
   usual dose raises `NoUsualDoseError`.
-  A milestone added for one baby is left out for the others. Adding a new milestone to the pick
-  list isn't supported yet. Vaccines work the same way: the app's 10 built-ins
+  A milestone added for one baby is left out for the others. `add_milestone_type` and
+  `add_vaccine_type` add a new one to the pick list, each posted as a selection of its own in
+  the shape of a new food (expected, not yet seen in synced data for these two). Vaccines work
+  the same way: the app's 10 built-ins
   (`BUILT_IN_VACCINES`) plus synced ones, `vaccine_choices()`, `find_vaccine`, and
   `UnknownVaccineError`. A medicine has no built-ins: `medicine_choices()` lists the ones doses
   already carry, and a `Medication` is logged against one by name or ID. `add_medicine` adds
@@ -140,7 +171,9 @@ key.
   like vaccines: the app's 5 built-ins (`BUILT_IN_ACTIVITIES`: Crawling, Cruising, Tummy Time, TV
   Time, Story Time) plus ones added in the app, `activity_choices()`, `find_activity`, and
   `UnknownActivityError`. The app has no bath screen: a bath is an activity of a type added in
-  the app, such as "Bath". An activity's `duration` is whole minutes, 0 when not timed.
+  the app, such as "Bath", or with `add_activity_type` (posted as an `OtherActivityDescription`
+  of its own, in the shape of a new food; that transaction is expected, not yet seen in synced
+  data). An activity's `duration` is whole minutes, 0 when not timed.
 - Foods work like activity types: the app's 9 built-ins (`BUILT_IN_FOODS`: Cereal, Veggies,
   Fruit, Meat, Finger Foods, Vitamins, and the drinks Water, Juice, and Milk) plus ones added in
   the app, `food_choices()`, `find_food`, and `UnknownFoodError`. A solid food's `unit` is free
