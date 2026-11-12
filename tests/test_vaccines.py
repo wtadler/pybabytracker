@@ -95,7 +95,12 @@ async def test_a_vaccine_added_in_the_app_is_offered_after_the_built_ins(
     assert [c.name for c in engine.vaccine_choices()][-1] == "RSV"
     await engine.add_vaccine(client, BABY_ID, "RSV", time=EVENT_TIME)
     [payload] = posted(fake_server)
-    assert payload["vaccineType"] == rsv
+    # Embedded as the iPhone app embeds an entry synced on its own: not new, and dated 1970.
+    assert payload["vaccineType"] == {
+        **rsv,
+        "newFlage": "false",
+        "timestamp": "1970-01-01 00:00:00 +0000",
+    }
 
 
 async def test_an_unknown_vaccine_is_refused_with_no_request(
