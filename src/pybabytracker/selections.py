@@ -15,7 +15,8 @@ clashing name.
 
 Milestones and vaccines a user adds are expected to sync as ``MilestoneSelection`` and
 ``VaccineSelection`` transactions of their own (expected shape, not yet seen in synced data).
-What has been seen is a medicine, which arrives only embedded in its doses.
+A medicine a user adds has been seen as a ``MedicationSelection`` transaction of its own,
+captured from an iPhone on 2026-11-11, and every dose embeds it.
 """
 
 from __future__ import annotations

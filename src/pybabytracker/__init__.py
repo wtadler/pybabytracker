@@ -5,9 +5,8 @@ from .builders import (
     GROWTH_RANGES,
     MAX_ACTIVITY_MINUTES,
     MAX_FOOD_NAME_LENGTH,
+    MAX_MEDICINE_AMOUNT,
     MAX_MEDICINE_INTERVAL,
-    MAX_MEDICINE_NAME_LENGTH,
-    MAX_MEDICINE_UNIT_LENGTH,
     MAX_OTHER_FEED_AMOUNT,
     TEMPERATURE_RANGES,
 )
@@ -122,9 +121,8 @@ from .times import format_time, from_unix, parse_time, standard_offset_seconds, 
 from .totals import DayTotals, LastBreast, day_totals, last_breast
 
 __all__ = [
+    "MAX_MEDICINE_AMOUNT",
     "MAX_MEDICINE_INTERVAL",
-    "MAX_MEDICINE_NAME_LENGTH",
-    "MAX_MEDICINE_UNIT_LENGTH",
     "GROWTH_RANGES",
     "MAX_ACTIVITY_MINUTES",
     "MAX_FOOD_NAME_LENGTH",

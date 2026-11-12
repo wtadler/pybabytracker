@@ -111,14 +111,7 @@ async def test_a_dose_can_give_its_own_amount(
 
     [payload] = posted(fake_server)
     assert payload["amount"] == 2.5
-    # Embedded as the iPhone app embeds a medicine (captured 2026-11-11): typed, not new, and
-    # dated 1970, whatever shape it synced in. The rest is kept as synced.
-    assert payload["medicationSelection"] == {
-        "BCObjectType": "MedicationSelection",
-        **ANDROID_MEDICINE,
-        "newFlage": "false",
-        "timestamp": "1970-01-01 00:00:00 +0000",
-    }
+    assert payload["medicationSelection"] == ANDROID_MEDICINE
 
 
 @pytest.mark.parametrize("amount", [0, -1, float("nan"), float("inf"), True, 0.001])

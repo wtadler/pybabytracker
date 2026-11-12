@@ -131,8 +131,11 @@ key.
   `UnknownVaccineError`. A medicine has no built-ins: `medicine_choices()` lists the ones doses
   already carry, and a `Medication` is logged against one by name or ID. `add_medicine` adds
   one as the iPhone app does (`isPresciption`, the app's spelling, and the interval in
-  minutes), and a dose embeds its medicine as the iPhone app does: typed, `newFlage` "false",
-  and the 1970 timestamp. Activity types work
+  minutes). A dose embeds an iPhone-shaped medicine (one with `isPresciption`) as the iPhone
+  app does: typed, `newFlage` "false", and the 1970 timestamp. Any other shape, such as an
+  Android phone's, is embedded as it synced. Only a medicine already in `medicine_choices()`
+  blocks a repeated name, so one in the account's seed but never used isn't caught.
+  Activity types work
   like vaccines: the app's 5 built-ins (`BUILT_IN_ACTIVITIES`: Crawling, Cruising, Tummy Time, TV
   Time, Story Time) plus ones added in the app, `activity_choices()`, `find_activity`, and
   `UnknownActivityError`. The app has no bath screen: a bath is an activity of a type added in
@@ -159,9 +162,10 @@ key.
 - How well this is checked: a built-in milestone ("Back home") and vaccine ("HepB") and a
   medicine dose were posted on iOS and read back unchanged, and the app showed each as the entry
   it is. The other built-in IDs, Android, and a custom milestone or vaccine are unverified. A
-  pick-list entry syncing as its own transaction (`MilestoneSelection`,
-  `VaccineSelection`, `MedicationSelection`) is an expected shape, not yet seen in synced data.
-  A medicine's `interval` is in minutes.
+  pick-list entry syncing as its own transaction (`MilestoneSelection`, `VaccineSelection`) is an
+  expected shape, not yet seen in synced data; a medicine has been (captured from an iPhone on
+  2026-11-11), and `add_medicine` is verified by that capture only, not run live. A medicine's
+  `interval` is in minutes.
 - Volumes are `Volume(value, "oz")` or `Volume(value, "ml")`, written as a `VolumeMeasure` with
   `englishMeasure` `"true"` (ounces) or `"false"` (milliliters), rounded to 2 decimals (an integer
   when whole). The number is written as given, with no conversion, as the app does.

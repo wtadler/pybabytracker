@@ -390,6 +390,16 @@ MAX_UNIT_LENGTH = 30
 _EMBEDDED_TIMESTAMP = "1970-01-01 00:00:00 +0000"
 
 
+def _embedded(type_name: str, selection: Mapping[str, Any]) -> dict[str, Any]:
+    """A pick-list entry as the iPhone app embeds it in a record: typed, not new, and dated 1970."""
+    return {
+        "BCObjectType": type_name,
+        **selection,
+        "newFlage": "false",
+        "timestamp": _EMBEDDED_TIMESTAMP,
+    }
+
+
 def draft_other_feed(
     selection: Mapping[str, Any],
     *,
@@ -420,13 +430,7 @@ def draft_other_feed(
         raise ValueError(f"unit can't be longer than {MAX_UNIT_LENGTH} characters")
     if not isinstance(meal_id, str) or not meal_id.strip():
         raise ValueError("meal_id must be text")
-    # As the iPhone app embeds a food: typed, not new, and dated 1970.
-    embedded = {
-        "BCObjectType": "OtherFeedSelection",
-        **selection,
-        "newFlage": "false",
-        "timestamp": _EMBEDDED_TIMESTAMP,
-    }
+    embedded = _embedded("OtherFeedSelection", selection)
     written_unit = unit.strip()
     value = _number(amount)
     desc = {
@@ -480,11 +484,21 @@ def draft_food(name: str, *, bottle: bool) -> Draft[OtherFeedSelection]:
     return Draft(OtherFeedSelection, build)
 
 
-# The longest name and unit of a medicine added to the pick list, in characters.
-MAX_MEDICINE_NAME_LENGTH = 50
-MAX_MEDICINE_UNIT_LENGTH = 30
-# The longest gap between doses. The app takes whole hours; an iPhone has synced 555.
+# The longest gap between doses. The app takes whole hours; an iPhone has synced 555, which is a
+# sighting, not a limit the app is known to enforce.
 MAX_MEDICINE_INTERVAL = timedelta(hours=999)
+# The largest usual dose: a guard against a typo, like MAX_OTHER_FEED_AMOUNT.
+MAX_MEDICINE_AMOUNT = 1000
+
+
+def _text(value: object, what: str, longest: int) -> str:
+    """``value`` without surrounding spaces, or ``ValueError`` unless it is text of 1 to
+    ``longest`` characters."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{what} must be text")
+    if len(value.strip()) > longest:
+        raise ValueError(f"{what} can't be longer than {longest} characters")
+    return value.strip()
 
 
 def draft_medicine(
@@ -505,24 +519,14 @@ def draft_medicine(
     most ``MAX_MEDICINE_INTERVAL``. ``amount_per_time`` is the usual dose in ``unit``, which is
     free text such as "ml" or "Drops". Text is written without surrounding spaces.
     """
-    if not isinstance(name, str) or not name.strip():
-        raise ValueError("a medicine's name must be text")
-    if len(name.strip()) > MAX_MEDICINE_NAME_LENGTH:
-        raise ValueError(
-            f"a medicine's name can't be longer than {MAX_MEDICINE_NAME_LENGTH} characters"
-        )
-    if not isinstance(unit, str) or not unit.strip():
-        raise ValueError("a medicine's unit must be text, such as 'ml' or 'Drops'")
-    if len(unit.strip()) > MAX_MEDICINE_UNIT_LENGTH:
-        raise ValueError(
-            f"a medicine's unit can't be longer than {MAX_MEDICINE_UNIT_LENGTH} characters"
-        )
-    if (
-        isinstance(amount_per_time, bool)
-        or not isinstance(amount_per_time, int | float)
-        or not math.isfinite(amount_per_time)
-        or _number(amount_per_time) <= 0
-    ):
+    written_name = _text(name, "a medicine's name", MAX_FOOD_NAME_LENGTH)
+    written_unit = _text(unit, "a medicine's unit", MAX_UNIT_LENGTH)
+    if isinstance(amount_per_time, bool) or not isinstance(amount_per_time, int | float):
+        raise ValueError("a medicine's usual dose must be a number")
+    # Compared before isfinite, which can't take an int too large for a float.
+    if amount_per_time > MAX_MEDICINE_AMOUNT:
+        raise ValueError(f"a medicine's usual dose can't be more than {MAX_MEDICINE_AMOUNT}")
+    if not math.isfinite(amount_per_time) or _number(amount_per_time) <= 0:
         raise ValueError("a medicine's usual dose must be a number more than zero")
     if not isinstance(interval, timedelta):
         raise ValueError("interval must be a timedelta, such as timedelta(hours=4)")
@@ -534,7 +538,7 @@ def draft_medicine(
         raise ValueError("prescription must be True or False")
     if not isinstance(description, str):
         raise ValueError("a medicine's description must be text")
-    written_name, written_desc, written_unit = name.strip(), description.strip(), unit.strip()
+    written_desc = description.strip()
     usual = _number(amount_per_time)
     minutes = int(interval / timedelta(minutes=1))
     flag = "true" if prescription else "false"
@@ -574,14 +578,17 @@ def draft_medication(
     note: str,
 ) -> Draft[Medication]:
     """A dose of a medicine: ``amount`` in its unit (default its usual dose, ``amountPerTime``),
-    with the medicine embedded as ``medicationSelection`` as the iPhone app embeds one: typed,
-    ``newFlage`` "false", and the 1970 timestamp (captured 2026-11-11)."""
-    embedded = {
-        "BCObjectType": "MedicationSelection",
-        **selection,
-        "newFlage": "false",
-        "timestamp": "1970-01-01 00:00:00 +0000",
-    }
+    with the medicine embedded as ``medicationSelection``. An iPhone-shaped medicine is embedded
+    as the iPhone app does (typed, ``newFlage`` "false", the 1970 timestamp: captured
+    2026-11-11); one of any other shape, such as an Android phone's, is embedded as it synced."""
+    # iPhone-shaped means it has the iPhone's "isPresciption" flag. An Android phone's medicine
+    # has "prescription" instead, with JSON booleans, and nothing shows how either app reads a
+    # mix of the two, so it keeps its own shape.
+    embedded = (
+        _embedded("MedicationSelection", selection)
+        if "isPresciption" in selection
+        else dict(selection)
+    )
     if amount is None:
         amount = _usual_dose(embedded)
         if amount is None:
