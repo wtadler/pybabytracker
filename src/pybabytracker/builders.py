@@ -70,6 +70,7 @@ from .models import (
     VolumeMeasure,
     _selection_name,
     check_jpeg,
+    numeric_code,
 )
 from .models import _number as _plain_number
 from .times import format_time
@@ -257,6 +258,201 @@ def pictured_payload(
     payload = record.to_payload()
     existing = payload.get("pictureNote")
     payload["pictureNote"] = [*(existing if isinstance(existing, list) else []), *entries]
+    payload["newFlage"] = False if isinstance(payload.get("newFlage"), bool) else "false"
+    payload["timestamp"] = format_time(timestamp.astimezone(UTC))
+    return payload
+
+
+@dataclass(frozen=True, slots=True)
+class Edit:
+    """What an edit changes in a saved record's payload: keys to set, and keys to drop."""
+
+    set: Mapping[str, Any]
+    drop: tuple[str, ...] = ()
+
+    def already_in(self, payload: Mapping[str, Any]) -> bool:
+        """Whether ``payload`` already holds every key to set with its new value, and none of
+        the keys to drop."""
+        return all(k in payload and payload[k] == v for k, v in self.set.items()) and not any(
+            k in payload for k in self.drop
+        )
+
+
+def common_changes(
+    *,
+    time: datetime | None,
+    timezone_offset: int | None,
+    note: str | None,
+    required: bool = True,
+) -> dict[str, Any]:
+    """The payload keys an edit of a record's time or note changes, checked. ``time`` (aware)
+    is written in UTC to the second. ``timezone`` changes only when ``timezone_offset`` is
+    given: an iPhone that moved a diaper's time by an hour left it alone (captured
+    2026-11-12). With ``required``, giving none of them raises."""
+    changes: dict[str, Any] = {}
+    if time is not None:
+        changes["time"] = _edited_time(time, "time")
+    if timezone_offset is not None:
+        if isinstance(timezone_offset, bool) or not isinstance(timezone_offset, int):
+            raise ValueError("timezone_offset must be a whole number of seconds")
+        changes["timezone"] = timezone_offset
+    if note is not None:
+        if not isinstance(note, str):
+            raise ValueError("note must be text")
+        changes["note"] = note
+    if required and not changes:
+        raise ValueError("give a time, a timezone_offset, or a note to change")
+    return changes
+
+
+def _edited_time(moment: object, name: str) -> str:
+    """An edited time as payloads carry it: UTC, to the second. A naive one is refused."""
+    if not isinstance(moment, datetime):
+        raise ValueError(f"{name} must be a datetime")
+    _offset(moment, name)
+    return format_time(moment.astimezone(UTC).replace(microsecond=0))
+
+
+def diaper_changes(status: int | None) -> dict[str, Any]:
+    """A diaper's kind, checked as for ``draft_diaper``."""
+    if status is None:
+        return {}
+    if (
+        isinstance(status, bool)
+        or not isinstance(status, int)
+        or status not in (DIAPER_WET, DIAPER_DIRTY, DIAPER_MIXED)
+    ):
+        raise ValueError(f"unknown diaper status: {status!r}")
+    return {"status": status}
+
+
+def bottle_changes(volume: Volume | None) -> dict[str, Any]:
+    """A bottle's volume, checked and written as for ``draft_bottle``."""
+    if volume is None:
+        return {}
+    checked = _checked(volume)
+    if checked.value <= 0:
+        raise ValueError("a bottle's volume must be more than zero")  # also after rounding
+    return {"amount": _measure(checked).to_payload()}
+
+
+# The keys an iPhone's nursing timer leaves on a record, which its edit of the minutes drops.
+_NURSING_TIMER_KEYS = ("isDetailed", "pairSessionState", "state")
+
+
+def nursing_edit(
+    nursing: Nursing,
+    *,
+    left_minutes: int | None,
+    right_minutes: int | None,
+    finish_side: int | None,
+) -> Edit:
+    """A nursing's minutes and side, checked as for ``draft_nursing``. A side not given keeps
+    its saved minutes, and ``finishSide`` is kept unless given, as an iPhone's edit kept it.
+    When the minutes change, the timer keys are dropped, as that edit dropped them (captured
+    2026-11-12: ``rightDuration`` 0 to 7)."""
+    changes: dict[str, Any] = {}
+    if finish_side is not None:
+        if isinstance(finish_side, bool) or finish_side not in (SIDE_NONE, SIDE_LEFT, SIDE_RIGHT):
+            raise ValueError(
+                f"finish_side must be SIDE_LEFT, SIDE_RIGHT, or SIDE_NONE, not {finish_side!r}"
+            )
+        changes["finishSide"] = finish_side
+    if left_minutes is None and right_minutes is None:
+        return Edit(changes)
+    left = (
+        _minutes(left_minutes, "left_minutes")
+        if left_minutes is not None
+        else numeric_code(nursing.left_duration) or 0
+    )
+    right = (
+        _minutes(right_minutes, "right_minutes")
+        if right_minutes is not None
+        else numeric_code(nursing.right_duration) or 0
+    )
+    if left + right == 0:
+        raise ValueError("a nursing session needs at least one minute on a side")
+    if left_minutes is not None:
+        changes["leftDuration"] = left
+    if right_minutes is not None:
+        changes["rightDuration"] = right
+    return Edit(changes, _NURSING_TIMER_KEYS)
+
+
+def sleep_changes(sleep: Sleep, *, start: datetime | None, end: datetime | None) -> dict[str, Any]:
+    """A sleep's start and end, checked as for ``draft_sleep``. The side not given is kept: a
+    new start keeps the saved end (so the length changes), and a running sleep stays running
+    until an end is given."""
+    if start is None and end is None:
+        return {}
+    changes: dict[str, Any] = {}
+    if start is not None:
+        changes["time"] = _edited_time(start, "start")
+    if end is not None:
+        _edited_time(end, "end")
+    begin = start if start is not None else sleep.time
+    if begin is None:
+        raise ValueError("the saved sleep has no start time")
+    saved_minutes = numeric_code(sleep.duration) or 0
+    if end is None:
+        if saved_minutes == 0 or sleep.time is None:
+            return changes  # running: only the start moves
+        end = sleep.time + timedelta(minutes=saved_minutes)
+    if end <= begin:
+        raise ValueError("end must be after start")
+    if end - begin > MAX_SLEEP:
+        raise ValueError("a sleep can't be longer than 24 hours")
+    changes["duration"] = sleep_minutes(begin, end)
+    return changes
+
+
+# The longest name of a baby, in characters.
+MAX_BABY_NAME_LENGTH = 50
+
+
+def baby_changes(
+    baby: Baby,
+    *,
+    name: str | None,
+    birth: datetime | None,
+    due: datetime | None,
+    boy: bool | None,
+) -> dict[str, Any]:
+    """The payload keys an edit of a baby changes, checked. ``birth`` and ``due`` (aware) are
+    written in UTC to the second, as ``dob`` and ``dueDay``. ``gender`` is true for a boy, and
+    keeps the type the saved baby has: the iPhone app writes "true" or "false", and Android a
+    JSON bool."""
+    changes: dict[str, Any] = {}
+    if name is not None:
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("a baby's name must be text")
+        if len(name.strip()) > MAX_BABY_NAME_LENGTH:
+            raise ValueError(
+                f"a baby's name can't be longer than {MAX_BABY_NAME_LENGTH} characters"
+            )
+        changes["name"] = name.strip()
+    if birth is not None:
+        changes["dob"] = _edited_time(birth, "birth")
+    if due is not None:
+        changes["dueDay"] = _edited_time(due, "due")
+    if boy is not None:
+        if not isinstance(boy, bool):
+            raise ValueError("boy must be True or False")
+        if isinstance(baby.gender, bool):
+            changes["gender"] = boy
+        else:
+            changes["gender"] = "true" if boy else "false"
+    return changes
+
+
+def edited_payload(record: Record, edit: Edit, timestamp: datetime) -> dict[str, Any]:
+    """The update that edits a saved record, as the iPhone app posts it: the record as last
+    saved (key order and unknown keys kept), with only the edited keys, ``newFlage`` false, and
+    ``timestamp`` changed. ``newFlage`` keeps its stored type, as in ``pictured_payload``."""
+    payload = record.to_payload()
+    payload.update(edit.set)
+    for key in edit.drop:
+        payload.pop(key, None)
     payload["newFlage"] = False if isinstance(payload.get("newFlage"), bool) else "false"
     payload["timestamp"] = format_time(timestamp.astimezone(UTC))
     return payload

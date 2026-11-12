@@ -89,6 +89,28 @@ The engine posts as its own device (`device_uuid`, which must match the client's
 - `delete_record` only deletes records this device added (`NotOwnRecordError`), and raises
   `RecordNotFoundError` if one is already deleted. Like the app, the delete sends the record as
   last saved with only `newFlage` set to `"false"`; its timestamp is not bumped.
+  With `any_device=True` it also deletes a record another device added, as the apps delete each
+  other's records, with the same payload: a baby's records and pumps, but not a baby or a
+  pick-list entry (`WrongRecordTypeError`), which the apps refuse to delete while in use.
+- `edit_record(client, object_id, time=, timezone_offset=, note=)` changes a saved record's
+  time or note, whichever device made it, as the apps do when a record is edited: an update
+  (opcode 1) carrying the record as last saved with only those keys, `newFlage` false, and
+  `timestamp` changed. It edits a baby's record or a pump, and posts nothing when the record
+  already has the values, so a retry is safe. A sleep's or nursing's length is kept when its
+  start moves.
+- `edit_diaper` (`status`), `edit_bottle` (`volume`), `edit_nursing` (`left_minutes`,
+  `right_minutes`, `finish_side`), and `edit_sleep` (`start`, `end`) change a record's own
+  fields the same way, with the time, zone, and note in the same update, and with the checks of
+  the matching `add_*`. A value not given is kept: a nursing's other side, and a sleep's end
+  when its start moves (so it gets longer or shorter). When a nursing's minutes change, the keys
+  an iPhone's timer left on it are dropped, as the iPhone app drops them; an Android timer's
+  `NursingSession` keeps its minutes.
+- `edit_baby(client, baby_id, name=, birth=, due=, boy=, photo=)` changes a baby with an update
+  of its `Baby` record, as the iPhone app does. A `photo` (JPEG bytes) is uploaded first as a new
+  uppercase UUID plus ".jpg" and again plus "_l.jpg" (the landscape copy, `landscape_photo` when
+  given), and becomes the baby's `pictureName`. Records added afterwards embed the edited baby.
+  A baby known only from the copies its records embed raises `RecordNotFoundError`: those can
+  be partial, and after a seed read the baby's own record is there.
 - Save `to_dict()` after every write, including one that raised: a pending post lives only in
   that state. Use one device ID per running process; two processes writing as one device can
   collide on a number while `LastSyncID` lags.
