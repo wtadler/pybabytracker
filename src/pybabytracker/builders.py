@@ -30,7 +30,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, NamedTuple
 
-from .client import JPEG_START, MAX_PICTURE_BYTES
 from .exceptions import NoUsualDoseError
 from .models import (
     DIAPER_DIRTY,
@@ -69,6 +68,7 @@ from .models import (
     Volume,
     VolumeMeasure,
     _selection_name,
+    check_jpeg,
 )
 from .models import _number as _plain_number
 from .times import format_time
@@ -204,12 +204,8 @@ def check_pictures(pictures: object) -> tuple[NewPicture, ...]:
     for picture in pictures:
         if not isinstance(picture, NewPicture):
             raise ValueError("each picture must be a NewPicture(photo, thumbnail)")
-        for name, data in (("photo", picture.photo), ("thumbnail", picture.thumbnail)):
-            if not isinstance(data, bytes | bytearray) or not data.startswith(JPEG_START):
-                raise ValueError(f"a picture's {name} must be the bytes of a JPEG")
-            if len(data) > MAX_PICTURE_BYTES:
-                raise ValueError(f"a picture's {name} can't be more than {MAX_PICTURE_BYTES} bytes")
-        checked.append(NewPicture(bytes(picture.photo), bytes(picture.thumbnail)))
+        photo = check_jpeg(picture.photo, "a picture's photo")
+        checked.append(NewPicture(photo, check_jpeg(picture.thumbnail, "a picture's thumbnail")))
     return tuple(checked)
 
 
@@ -246,12 +242,13 @@ def pictured_payload(
 ) -> dict[str, Any]:
     """The update that adds photos to a saved record, as both apps post it when a photo is added
     while editing: the record as last saved (key order and unknown keys kept), with only
-    ``pictureNote`` (its entries, then the new ones), ``newFlage`` "false", and ``timestamp``
-    changed."""
+    ``pictureNote`` (its entries, then the new ones), ``newFlage`` false, and ``timestamp``
+    changed. ``newFlage`` keeps its stored type: the iPhone app writes the string "false", and
+    Android's edit writes a JSON ``false`` into a record that holds a bool."""
     payload = record.to_payload()
     existing = payload.get("pictureNote")
     payload["pictureNote"] = [*(existing if isinstance(existing, list) else []), *entries]
-    payload["newFlage"] = "false"
+    payload["newFlage"] = False if isinstance(payload.get("newFlage"), bool) else "false"
     payload["timestamp"] = format_time(timestamp.astimezone(UTC))
     return payload
 

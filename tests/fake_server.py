@@ -93,6 +93,8 @@ class FakeSyncServer:
         self.uploads: list[tuple[str, bytes]] = []
         # The status to answer a picture upload with (the live service answers 201).
         self.upload_status = 201
+        # Answer a picture upload with a redirect to this location.
+        self.upload_redirect: str | None = None
         # The status for a picture it doesn't have: the live service answers 400.
         self.missing_picture_status = 400
         # A picture file name that answers with a redirect to this location.
@@ -153,6 +155,7 @@ class FakeSyncServer:
         app.router.add_post("/account/picture", self._post_picture)
         app.router.add_get("/account/seed", self._get_seed)
         app.router.add_get("/elsewhere/{name}", self._get_elsewhere)
+        app.router.add_post("/elsewhere/{name}", self._get_elsewhere)
         return app
 
     @staticmethod
@@ -246,6 +249,10 @@ class FakeSyncServer:
         body = self.requests[-1].body
         assert isinstance(body, bytes)
         self.uploads.append((request.headers.get("Content-Type", ""), body))
+        if self.upload_redirect is not None:
+            return web.Response(
+                status=self.redirect_status, headers={"Location": self.upload_redirect}
+            )
         if self.upload_status != 201:
             return web.Response(status=self.upload_status, text="forced")
         boundary = "__BABY_TRACKER_BOUNDARY____Photo__"

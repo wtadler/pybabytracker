@@ -59,10 +59,11 @@ engine's own device:
   whether it was applied locally or read back by a sync. Like the app, a delete sends the
   record exactly as last saved, with only ``newFlage`` set to ``"false"``: its timestamp is not
   bumped.
-- The only edit (opcode 1) is ``end_sleep``, which ends a running sleep whichever device started
-  it. An update shares the numbering, pending, and grace-window rules above, but it isn't an add:
-  it never makes a record this device's own (``created_ids``, ``own_writes``). Its local apply
-  is the same merge a replay of the log performs.
+- The edits (opcode 1) are ``end_sleep``, which ends a running sleep, and ``add_pictures``, which
+  adds photos to a joy, milestone, or activity, whichever device made it. An update shares the
+  numbering, pending, and grace-window rules above, but it isn't an add: it never makes a record
+  this device's own (``created_ids``, ``own_writes``). Its local apply is the same merge a replay
+  of the log performs.
 
 What the caller must do:
 
@@ -416,15 +417,6 @@ class SyncEngine:
         record is returned and nothing is posted. An id matches whatever its case, and one equal
         to another device's id apart from case raises ``ObjectIdInUseError``. Every ``add_*``
         method shares these rules. Bad input raises ``ValueError`` before any request.
-
-        ``add_milestone`` and ``add_activity`` take ``pictures``: photos, each a
-        ``NewPicture(photo, thumbnail)`` of JPEG bytes, as both apps attach them when a record is
-        added. Those are the record types the app's entry screens attach photos to (with a joy);
-        the others have no photo picker, so no picture is written to them. Before the record is
-        posted, each photo is uploaded as a new uppercase UUID plus ".jpg"
-        and its thumbnail as that UUID plus "__thumbnail.jpg", and the record lists them in its
-        ``pictureNote``. If an upload fails, the error is raised and nothing is posted; a retry
-        uploads the pictures again under new names.
         """
         draft = draft_diaper(status, time=time, timezone_offset=timezone_offset, note=note)
         return await self._add(target, baby_id, draft, object_id)
@@ -441,8 +433,12 @@ class SyncEngine:
         pictures: Sequence[NewPicture] = (),
     ) -> Joy:
         """Post a joy, a moment kept with its ``note`` and ``pictures``, at ``time`` (default
-        now). The arguments work as for ``add_diaper``."""
+        now). A joy with neither (a blank note and no pictures) raises ``ValueError`` before any
+        request. ``pictures`` work as for ``add_activity``, and the other arguments as for
+        ``add_diaper``."""
         draft = draft_joy(time=time, timezone_offset=timezone_offset, note=note)
+        if not note.strip() and not check_pictures(pictures):
+            raise ValueError("a joy needs a note or a picture")
         return await self._add(target, baby_id, draft, object_id, pictures=pictures)
 
     async def add_pictures(
@@ -452,11 +448,16 @@ class SyncEngine:
         post an update (opcode 1), as both apps do when a photo is added while editing one. Those
         are the record types the app's entry screens attach photos to.
 
-        ``pictures`` (at least one) are uploaded as for an add's ``pictures``, then the update
-        carries the record as last saved with only ``pictureNote`` (its entries, then the new
-        ones), ``newFlage`` "false", and ``timestamp`` changed. The timestamp is the write time,
-        or one second past the stored one if that is ahead of this clock, so the update wins the
-        merge. Returns the record as updated.
+        ``pictures`` (at least one) are uploaded as for ``add_activity``'s ``pictures``. Then the
+        update carries the record as last saved with only ``pictureNote`` (its entries, then the
+        new ones), ``newFlage`` false (in the type the record stores it), and ``timestamp``
+        changed. The timestamp is the write time, or one second past the stored one if that is
+        ahead of this clock, so the update wins the merge. Returns the record as updated.
+
+        Before reading the record, every device's log is caught up, so a photo, an edit, or a
+        delete another device made since the last sync is kept (or refused, for a delete). An
+        edit that lands on the service between that read and the post is overwritten, as it is
+        when a photo is added in the app.
 
         Refused before any request: ``ValueError`` for bad or no pictures,
         ``RecordNotFoundError`` for a record never seen or deleted, and ``WrongRecordTypeError``
@@ -471,17 +472,14 @@ class SyncEngine:
             self._check_can_write(target)
             object_id = self._resolve_id(object_id, self._records, self._tombstones) or object_id
             self._picturable(object_id)
+            # Every device's log, not just this one's: the update carries the whole record, so
+            # it must hold whatever another device saved since the last sync.
+            await self._catch_up(target)
             number = await self._prepare(target)
             record = self._picturable(object_id)  # as last saved, after the catch-up
-            names = [str(uuid.uuid4()).upper() for _ in photos]
-            for name, photo in zip(names, photos, strict=True):
-                await target.upload_picture(f"{name}.jpg", photo.photo)
-                await target.upload_picture(f"{name}__thumbnail.jpg", photo.thumbnail)
-            stamp = _now()
-            if record.timestamp is not None and record.timestamp >= stamp:
-                stamp = record.timestamp.astimezone(UTC) + timedelta(seconds=1)
+            names = await self._upload_pictures(target, photos)
             entries = [picture_entry(name, record.object_id) for name in names]
-            updated = decode_payload(pictured_payload(record, entries, stamp))
+            updated = decode_payload(pictured_payload(record, entries, _update_stamp(record)))
             assert isinstance(updated, Joy | Milestone | OtherActivity)
             await self._send(target, number, OP_UPDATE, encode_transaction(updated))
             return updated
@@ -493,11 +491,7 @@ class SyncEngine:
             raise WrongRecordTypeError(
                 f"record {object_id} is a Baby, not a joy, milestone, or activity"
             )
-        record = self._records.get(object_id)
-        if record is None:
-            if object_id in self._tombstones:
-                raise RecordNotFoundError(f"record {object_id} was deleted")
-            raise RecordNotFoundError(f"no record {object_id} is known from sync")
+        record = self._saved_record(object_id)
         if not isinstance(record, Joy | Milestone | OtherActivity):
             raise WrongRecordTypeError(
                 f"record {object_id} is a {record.record_type or 'record'}, "
@@ -525,8 +519,8 @@ class SyncEngine:
         and the ID must be passed instead. The record embeds that milestone as the app does. An
         empty or non-text ``milestone`` raises ``InvalidSelectionNameError``, an unknown one
         ``UnknownMilestoneError``, and no baby ``UnknownBabyError``, all before any request;
-        adding a new milestone to the pick list isn't supported yet. The other arguments work as
-        for ``add_diaper``.
+        adding a new milestone to the pick list isn't supported yet. ``pictures`` work as for
+        ``add_activity``, and the other arguments as for ``add_diaper``.
         """
         self._check_baby(target, baby_id)
 
@@ -646,6 +640,15 @@ class SyncEngine:
         the errors ``add_milestone`` does (``UnknownActivityError`` for an unknown type) or
         ``ValueError`` for a bad duration, before any request; adding a new type to the pick
         list isn't supported yet. The other arguments work as for ``add_diaper``.
+
+        ``pictures`` are photos, each a ``NewPicture(photo, thumbnail)`` of JPEG bytes, as both
+        apps attach them when a record is added. ``add_activity``, ``add_milestone``, and
+        ``add_joy`` take them: those are the record types the app's entry screens attach photos
+        to, and the others have no photo picker. Before the record is posted, each photo is
+        uploaded as a new uppercase UUID plus ".jpg" and its thumbnail as that UUID plus
+        "__thumbnail.jpg", and the record lists them in its ``pictureNote``. If an upload fails,
+        the error is raised and nothing is posted; a file that did land stays on the service (it
+        can't be deleted), and a retry uploads the pictures again under new names.
         """
         self._check_baby(target, baby_id)
 
@@ -1088,10 +1091,7 @@ class SyncEngine:
                 _LOGGER.warning("The end of sleep %s is in the future; ending it now", object_id)
             if finish.long_clamped:
                 _LOGGER.warning("Sleep %s ran longer than 24 hours; writing 24 hours", object_id)
-            stamp = _now()
-            if sleep.timestamp is not None and sleep.timestamp >= stamp:
-                stamp = sleep.timestamp.astimezone(UTC) + timedelta(seconds=1)
-            payload = ended_sleep_payload(sleep, finish.minutes, stamp)
+            payload = ended_sleep_payload(sleep, finish.minutes, _update_stamp(sleep))
             ended_sleep = decode_payload(payload)
             assert isinstance(ended_sleep, Sleep)
             await self._send(target, number, OP_UPDATE, encode_transaction(ended_sleep))
@@ -1100,11 +1100,7 @@ class SyncEngine:
     def _endable(self, object_id: str) -> tuple[Sleep, bool]:
         """The sleep ``object_id`` names and whether this device already ended it (its own end
         update is in this device's log); else raise why it can't be ended."""
-        record = self._records.get(object_id)
-        if record is None:
-            if object_id in self._tombstones:
-                raise RecordNotFoundError(f"record {object_id} was deleted")
-            raise RecordNotFoundError(f"no record {object_id} is known from sync")
+        record = self._saved_record(object_id)
         if not isinstance(record, Sleep):
             raise WrongRecordTypeError(
                 f"record {object_id} is a {record.record_type or 'record'}, not a Sleep"
@@ -1114,6 +1110,16 @@ class SyncEngine:
         if object_id in self._own_updates:
             return record, True
         raise TimerNotRunningError(f"sleep {object_id} isn't running")
+
+    def _saved_record(self, object_id: str) -> Record:
+        """The record ``object_id`` names, or ``RecordNotFoundError`` when it was deleted or was
+        never seen."""
+        record = self._records.get(object_id)
+        if record is None:
+            if object_id in self._tombstones:
+                raise RecordNotFoundError(f"record {object_id} was deleted")
+            raise RecordNotFoundError(f"no record {object_id} is known from sync")
+        return record
 
     def _resolve_id(self, object_id: str, *held: Collection[str]) -> str | None:
         """The id the engine holds for ``object_id``, whatever its case, or ``None``.
@@ -1176,17 +1182,23 @@ class SyncEngine:
                     raise ObjectIdInUseError(f"object_id {object_id} belongs to another record")
             record = draft.build(object_id or str(uuid.uuid4()).upper(), baby, _now())
             if photos:
-                # The files go first: other devices fetch a picture as soon as they merge its
-                # record.
-                names = [str(uuid.uuid4()).upper() for _ in photos]
-                for name, photo in zip(names, photos, strict=True):
-                    await target.upload_picture(f"{name}.jpg", photo.photo)
-                    await target.upload_picture(f"{name}__thumbnail.jpg", photo.thumbnail)
+                names = await self._upload_pictures(target, photos)
                 record = replace(
                     record, picture_note=[picture_entry(name, record.object_id) for name in names]
                 )
             await self._send(target, number, OP_ADD, encode_transaction(record))
             return record
+
+    @staticmethod
+    async def _upload_pictures(target: WriteTarget, photos: Sequence[NewPicture]) -> list[str]:
+        """Upload each photo as a new uppercase UUID plus ".jpg" and its thumbnail as that UUID
+        plus "__thumbnail.jpg", and return the UUIDs. The files go before the record that names
+        them, since other devices fetch a picture as soon as they merge its record."""
+        names = [str(uuid.uuid4()).upper() for _ in photos]
+        for name, photo in zip(names, photos, strict=True):
+            await target.upload_picture(f"{name}.jpg", photo.photo)
+            await target.upload_picture(f"{name}__thumbnail.jpg", photo.thumbnail)
+        return names
 
     async def delete_record(self, target: WriteTarget, object_id: str) -> None:
         """Post a delete of a record this device created, carrying the full record.
@@ -1336,6 +1348,12 @@ class SyncEngine:
         if not self.seeded:
             await self._read_seed(source)
             seed_read = self.seeded
+        devices, applied, skipped = await self._catch_up(source)
+        return SyncResult(devices, applied, skipped, seed_read)
+
+    async def _catch_up(self, source: SyncSource) -> tuple[int, int, int]:
+        """Read every device's log through its ``LastSyncID``: how many devices were read, and
+        the transactions applied and skipped. Hold the lock."""
         listed = await source.get_devices()
         self._check_account(source)
         devices = self.devices_to_fetch(listed)
@@ -1344,7 +1362,7 @@ class SyncEngine:
             result = await self._read_through(source, device.device_uuid, device.last_sync_id)
             applied += result.applied
             skipped += result.skipped
-        return SyncResult(len(devices), applied, skipped, seed_read)
+        return len(devices), applied, skipped
 
     async def _read_seed(self, source: SyncSource) -> None:
         """Load the account's seed, once, if ``source`` can fetch it (``get_seed``).
@@ -1639,6 +1657,15 @@ def _wanted(value: object, what: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise InvalidSelectionNameError(what, value)
     return value
+
+
+def _update_stamp(record: Record) -> datetime:
+    """An update's timestamp: now, or one second past the stored one if that is ahead of this
+    clock, so the update wins the merge on every device."""
+    stamp = _now()
+    if record.timestamp is not None and record.timestamp >= stamp:
+        stamp = record.timestamp.astimezone(UTC) + timedelta(seconds=1)
+    return stamp
 
 
 def _now() -> datetime:

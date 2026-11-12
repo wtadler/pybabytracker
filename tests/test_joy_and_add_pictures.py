@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
@@ -172,6 +173,32 @@ async def test_an_android_record_keeps_its_own_values_and_id_case(
     [payload] = posted(fake_server)
     assert payload["objectID"] == android_id
     assert payload["pictureLoaded"] is True
+
+
+async def test_an_android_record_keeps_new_flage_a_json_bool(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    android_id = "ea000000-0000-4000-8000-0000000000a3"
+    android = payload_for("OtherActivity", android_id)
+    android.update(newFlage=True, pictureLoaded=True, duration=0, desc={"objectID": "T-2"})
+    seed(fake_server, android)
+    engine = await synced(client)
+
+    await engine.add_pictures(client, android_id, PICTURES)
+
+    [payload] = posted(fake_server)
+    assert payload["newFlage"] is False
+
+
+async def test_an_iphone_record_keeps_new_flage_a_string(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    seed(fake_server, iphone_activity())
+    engine = await synced(client)
+
+    await engine.add_pictures(client, ACTIVITY_ID, PICTURES)
+
+    [payload] = posted(fake_server)
     assert payload["newFlage"] == "false"
 
 
@@ -257,3 +284,122 @@ async def test_photos_after_the_group_is_reset_post_nothing(
         await engine.add_joy(client, BABY_ID, pictures=PICTURES)
     assert fake_server.uploads == []
     assert posted(fake_server) == []
+
+
+async def test_a_photo_a_phone_added_since_the_last_sync_is_kept(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    seed(fake_server, iphone_activity())
+    engine = await synced(client)
+    # After this engine's last sync, a phone adds a photo to the same activity.
+    edited = iphone_activity(pictureNote=[OLD_PICTURE], timestamp="2026-11-11 20:00:00 +0000")
+    fake_server.add_transaction(PHONE, OP_UPDATE, edited)
+
+    updated = await engine.add_pictures(client, ACTIVITY_ID, PICTURES)
+
+    [payload] = posted(fake_server)
+    assert payload["pictureNote"][0] == OLD_PICTURE
+    assert len(payload["pictureNote"]) == 2
+    assert len(updated.pictures) == 2
+
+
+async def test_a_note_a_phone_edited_since_the_last_sync_is_kept(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    seed(fake_server, iphone_activity())
+    engine = await synced(client)
+    edited = iphone_activity(note="Edited on the phone", timestamp="2026-11-11 20:00:00 +0000")
+    fake_server.add_transaction(PHONE, OP_UPDATE, edited)
+
+    await engine.add_pictures(client, ACTIVITY_ID, PICTURES)
+
+    [payload] = posted(fake_server)
+    assert payload["note"] == "Edited on the phone"
+
+
+async def test_a_record_a_phone_deleted_since_the_last_sync_is_not_brought_back(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    seed(fake_server, iphone_activity())
+    engine = await synced(client)
+    fake_server.add_transaction(PHONE, OP_DELETE, iphone_activity())
+
+    with pytest.raises(RecordNotFoundError):
+        await engine.add_pictures(client, ACTIVITY_ID, PICTURES)
+    assert posted(fake_server) == []
+    assert fake_server.uploads == []
+
+
+async def test_a_thumbnail_that_fails_after_its_photo_landed_posts_nothing(
+    client: BabyTrackerClient, fake_server: FakeSyncServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed(fake_server, iphone_activity())
+    engine = await synced(client)
+    real = client.upload_picture
+
+    async def thumbnail_fails(file_name: str, data: bytes | bytearray) -> None:
+        if file_name.endswith("__thumbnail.jpg"):
+            fake_server.upload_status = 500
+        try:
+            await real(file_name, data)
+        finally:
+            fake_server.upload_status = 201
+
+    monkeypatch.setattr(client, "upload_picture", thumbnail_fails)
+
+    with pytest.raises(BabyTrackerConnectionError):
+        await engine.add_pictures(client, ACTIVITY_ID, PICTURES)
+    assert len(fake_server.pictures) == 1  # the photo landed; its thumbnail didn't
+    assert posted(fake_server) == []
+    assert not engine.to_dict()["pending"]
+    assert engine.records[ACTIVITY_ID].pictures == []
+
+    monkeypatch.undo()
+    updated = await engine.add_pictures(client, ACTIVITY_ID, PICTURES)
+    assert len(posted(fake_server)) == 1
+    assert len(updated.pictures) == 1
+
+
+async def test_two_add_pictures_at_once_keep_both_photos(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    seed(fake_server, iphone_activity())
+    engine = await synced(client)
+    other = [NewPicture(PHOTO + b"-other", THUMBNAIL)]
+
+    await asyncio.gather(
+        engine.add_pictures(client, ACTIVITY_ID, PICTURES),
+        engine.add_pictures(client, ACTIVITY_ID, other),
+    )
+
+    first, second = posted(fake_server)
+    assert len(first["pictureNote"]) == 1
+    assert second["pictureNote"][0] == first["pictureNote"][0]
+    assert len(second["pictureNote"]) == 2
+    assert len(engine.records[ACTIVITY_ID].pictures) == 2
+
+
+@pytest.mark.parametrize("note", ["", "   ", "\n\t"])
+async def test_a_joy_with_no_note_and_no_photo_is_refused_with_no_request(
+    client: BabyTrackerClient, fake_server: FakeSyncServer, note: str
+) -> None:
+    seed(fake_server)
+    engine = await synced(client)
+    before = len(fake_server.requests)
+
+    with pytest.raises(ValueError):
+        await engine.add_joy(client, BABY_ID, note=note)
+    assert len(fake_server.requests) == before
+
+
+async def test_a_joy_with_a_photo_and_no_note_is_posted(
+    client: BabyTrackerClient, fake_server: FakeSyncServer
+) -> None:
+    seed(fake_server)
+    engine = await synced(client)
+
+    joy = await engine.add_joy(client, BABY_ID, pictures=PICTURES)
+
+    assert joy.note == ""
+    assert len(joy.pictures) == 1
+    assert len(posted(fake_server)) == 1

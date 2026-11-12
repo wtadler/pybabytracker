@@ -20,7 +20,7 @@ from pybabytracker import (
     NewPicture,
     SyncEngine,
 )
-from pybabytracker import builders as builders_module
+from pybabytracker import models as models_module
 
 EVENT_TIME = datetime(2026, 11, 11, 19, 51, tzinfo=UTC)
 PHOTO = b"\xff\xd8\xff\xe0invented-photo\xff\xd9"
@@ -199,7 +199,7 @@ async def test_a_picture_over_the_limit_is_refused_with_no_request(
     seed(fake_server)
     engine = await synced(client)
     before = len(fake_server.requests)
-    monkeypatch.setattr(builders_module, "MAX_PICTURE_BYTES", len(PHOTO) - 1)
+    monkeypatch.setattr(models_module, "MAX_PICTURE_BYTES", len(PHOTO) - 1)
 
     with pytest.raises(ValueError):
         await engine.add_activity(

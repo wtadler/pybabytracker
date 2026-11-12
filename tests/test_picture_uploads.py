@@ -9,6 +9,7 @@ import pytest
 from conftest import PROBE_UUID
 from fake_server import FakeSyncServer
 
+import pybabytracker
 from pybabytracker import (
     AuthenticationError,
     BabyTrackerClient,
@@ -16,7 +17,7 @@ from pybabytracker import (
     NoResponseError,
     ProtocolError,
 )
-from pybabytracker import client as client_module
+from pybabytracker import models as models_module
 
 JPEG = b"\xff\xd8\xff\xe0invented-jpeg-bytes\r\n--not-a-boundary\xff\xd9"
 BOUNDARY = "__BABY_TRACKER_BOUNDARY____Photo__"
@@ -54,9 +55,10 @@ async def test_an_uploaded_photo_and_thumbnail_download_as_sent(
     assert await client.get_picture("PHOTO-1__thumbnail.jpg") == thumbnail
 
 
-async def test_uploading_a_name_again_replaces_the_file(
+async def test_uploading_a_name_again_replaces_the_file_on_the_fake_service(
     client: BabyTrackerClient, fake_server: FakeSyncServer
 ) -> None:
+    # Expected of the live service, not yet seen there.
     await client.upload_picture("PHOTO-1.jpg", JPEG)
     await client.upload_picture("PHOTO-1.jpg", JPEG + b"-again")
 
@@ -141,6 +143,12 @@ async def test_an_upload_with_no_answer_raises_no_response(
         ("PHOTO-1.jpg", b"\x89PNG\r\n\x1a\n"),
         ("PHOTO-1.jpg", "\xff\xd8\xff"),
         ("PHOTO-1.jpg", None),
+        ("PHOTO-1", JPEG),
+        ("PHOTO-1.mp4", JPEG),
+        ("PHOTO-1.jpeg", JPEG),
+        ("PHOTO-1.JPG", JPEG),
+        ("PHOTO-1.jpg.png", JPEG),
+        (".jpg", JPEG),
     ],
 )
 async def test_a_bad_name_or_file_is_refused_with_no_request(
@@ -154,10 +162,28 @@ async def test_a_bad_name_or_file_is_refused_with_no_request(
 async def test_a_file_over_the_limit_is_refused_with_no_request(
     client: BabyTrackerClient, fake_server: FakeSyncServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(client_module, "MAX_PICTURE_BYTES", len(JPEG) - 1)
+    monkeypatch.setattr(models_module, "MAX_PICTURE_BYTES", len(JPEG) - 1)
     with pytest.raises(ValueError):
         await client.upload_picture("PHOTO-1.jpg", JPEG)
     assert fake_server.requests == []
 
-    monkeypatch.setattr(client_module, "MAX_PICTURE_BYTES", len(JPEG))
+    monkeypatch.setattr(models_module, "MAX_PICTURE_BYTES", len(JPEG))
     await client.upload_picture("PHOTO-1.jpg", JPEG)
+
+
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+async def test_a_redirected_upload_is_an_error_and_is_not_followed(
+    client: BabyTrackerClient, fake_server: FakeSyncServer, status: int
+) -> None:
+    fake_server.upload_redirect = "/elsewhere/PHOTO-1.jpg"
+    fake_server.redirect_status = status
+
+    with pytest.raises(ProtocolError):
+        await client.upload_picture("PHOTO-1.jpg", JPEG)
+    assert fake_server.calls("GET", "/elsewhere") == []
+    assert fake_server.calls("POST", "/elsewhere") == []
+
+
+def test_the_size_limit_is_exported() -> None:
+    assert pybabytracker.MAX_PICTURE_BYTES == 20 * 1024 * 1024
+    assert "MAX_PICTURE_BYTES" in pybabytracker.__all__

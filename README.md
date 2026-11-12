@@ -111,7 +111,7 @@ key.
 | `add_vaccine(client, baby_id, vaccine, ...)` | `Vaccine` | `vaccine` is a name or ID from `vaccine_choices()` |
 | `add_medication(client, baby_id, medicine, amount=None, ...)` | `Medication` | a dose; `medicine` is a name or ID from `medicine_choices()`, `amount` defaults to its usual dose |
 | `add_activity(client, baby_id, activity, duration=0, ...)` | `OtherActivity` | tummy time, a bath, and so on; `activity` is a name or ID from `activity_choices()` |
-| `add_joy(client, baby_id, note="", pictures=(), ...)` | `Joy` | a moment kept with its note and photos |
+| `add_joy(client, baby_id, note="", pictures=(), ...)` | `Joy` | a moment kept with its note and photos, at least one of the two |
 | `add_growth(client, baby_id, weight=, length=, head=, ...)` | `Growth` | any of the three, each a `Measurement`, rounded to two decimals; weight in decimal `"lb"` (9 lb 4 oz is 9.25) or `"kg"`, length and head in one of `"in"` or `"cm"`; each must be in `GROWTH_RANGES` |
 | `add_temperature(client, baby_id, temperature, ...)` | `Temperature` | `Measurement(value, "F")` or `Measurement(value, "C")`, not converted and rounded to two decimals; must be in `TEMPERATURE_RANGES` |
 | `add_other_feed(client, baby_id, food, amount=, unit=, meal_id=None, ...)` | `OtherFeed` | a solid food (or water, juice); `food` is a name or ID from `food_choices()`, `amount` counts `unit` (free text: "Oz", "Pieces", "Tsp") |
@@ -198,24 +198,29 @@ key.
   refused.
 - `client.upload_picture(name, data)` uploads a JPEG under that name, in the multipart form the
   apps use. Upload a photo and its thumbnail before the record that names them, since other
-  devices download a picture as soon as they merge its record. Uploading a name again replaces
-  the file. A file over `MAX_PICTURE_BYTES` (20 MB), data that isn't a JPEG, or a name with a
-  path separator, quote, or line break raises `ValueError` before any request.
-- `add_milestone` and `add_activity` take `pictures=[NewPicture(photo, thumbnail), ...]`, each
-  the bytes of a JPEG, as both apps attach photos when a record is added. Those are the record
-  types the app's entry screens attach photos to; the others have no photo picker. The engine uploads each
-  photo as a new uppercase UUID plus ".jpg" and its thumbnail as that UUID plus
-  "__thumbnail.jpg", then posts the record with a `pictureNote` entry for each, as the iPhone
-  app writes one. Bad pictures raise `ValueError` before any request; a failed upload posts
-  nothing. The caller makes the thumbnail (any smaller JPEG of the photo): the library has no
-  image dependency.
+  devices download a picture as soon as they merge its record. Uploading a name again is
+  expected to replace the file (not yet seen live). A file over `MAX_PICTURE_BYTES` (20 MB),
+  data that isn't a JPEG, or a name that doesn't end ".jpg" or has a path separator, quote, or
+  line break raises `ValueError` before any request. A redirect raises `ProtocolError`.
+- `add_milestone`, `add_activity`, and `add_joy` take `pictures=[NewPicture(photo, thumbnail),
+  ...]`, each the bytes of a JPEG, as both apps attach photos when a record is added. Those are
+  the record types the app's entry screens attach photos to; the others have no photo picker.
+  The engine uploads each photo as a new uppercase UUID plus ".jpg" and its thumbnail as that
+  UUID plus "__thumbnail.jpg", then posts the record with a `pictureNote` entry for each, as the
+  iPhone app writes one. Bad pictures raise `ValueError` before any request; a failed upload
+  posts nothing. The caller makes the thumbnail (any smaller JPEG of the photo): the library
+  has no image dependency.
 - `add_pictures(client, object_id, pictures)` adds photos to a joy, milestone, or activity
-  already saved, whichever device made it, as both apps do when a photo is added while editing: an update
-  (opcode 1) carrying the record as last saved with only `pictureNote` (its entries, then the
-  new ones), `newFlage` "false", and `timestamp` changed. A deleted or unknown record raises
-  `RecordNotFoundError`; any other record (a diaper, a sleep, a baby) `WrongRecordTypeError`.
+  already saved, whichever device made it, as both apps do when a photo is added while
+  editing: an update (opcode 1) carrying the record as last saved with only `pictureNote` (its
+  entries, then the new ones), `newFlage` false (a string or a bool, as the record stores it),
+  and `timestamp` changed. It first catches up every device's log, so another device's photo
+  or edit since the last sync is kept; one landing between that read and the post is
+  overwritten, as in the app. A deleted or unknown record raises `RecordNotFoundError`; any
+  other record (a diaper, a sleep, a baby) `WrongRecordTypeError`.
 - `add_joy(client, baby_id, note=, pictures=)` logs a joy, the app's record for a moment kept
-  with a note and photos. It has no fields of its own.
+  with a note and photos. It has no fields of its own. A joy with a blank note and no pictures
+  raises `ValueError`.
 
 ### Sleep timers
 

@@ -54,17 +54,21 @@ UNIT_CELSIUS = "C"
 
 MEDIA_PHOTO = 0
 MEDIA_VIDEO = 1
+# The largest picture file downloaded or uploaded.
+MAX_PICTURE_BYTES = 20 * 1024 * 1024
+# How a JPEG file starts (its SOI marker and the next marker's first byte).
+_JPEG_START = b"\xff\xd8\xff"
 
 
 class Picture(NamedTuple):
     """A picture attached to a record (one entry of its ``pictureNote``).
 
     ``file_name`` is the entry's ``fileName``. ``file`` is the photo or video on the service and
-    ``thumbnail_file`` its thumbnail, both for ``BabyTrackerClient.get_picture``. A record
-    picture's photo file (``fileName`` plus ".jpg") was seen in synced data and downloaded. These
-    are the expected shape, not yet seen in synced data: the ".mp4" file for a video
-    (``MEDIA_VIDEO``), the "__thumbnail.jpg" thumbnail, and a ``mediaType`` sent as a digit
-    string. ``file`` is ``None`` for a media type other than a photo or a video.
+    ``thumbnail_file`` its thumbnail, both for ``BabyTrackerClient.get_picture``. Seen in synced
+    data and on the service: the photo file (``fileName`` plus ".jpg"), its thumbnail
+    (``fileName`` plus "__thumbnail.jpg"), and Android's ``mediaType`` sent as a digit string
+    ("0"). The ".mp4" file for a video (``MEDIA_VIDEO``) is the expected shape, not yet seen.
+    ``file`` is ``None`` for a media type other than a photo or a video.
     """
 
     object_id: str | None
@@ -91,7 +95,7 @@ def _picture(entry: object) -> Picture | None:
     file_name = entry.get("fileName")
     if not isinstance(file_name, str) or not is_plain_file_name(file_name):
         return None
-    # A number, or a digit string ("0") that Android is expected to send.
+    # A number (iPhone), or a digit string ("0", Android).
     media_type = numeric_code(entry.get("mediaType"))
     extension = (
         {MEDIA_PHOTO: ".jpg", MEDIA_VIDEO: ".mp4"}.get(media_type)
@@ -260,6 +264,16 @@ def is_plain_file_name(name: object) -> bool:
         and "\\" not in name
         and name not in (".", "..")
     )
+
+
+def check_jpeg(data: object, what: str) -> bytes:
+    """``data`` as ``bytes``, or ``ValueError`` unless it is the bytes of a JPEG of at most
+    ``MAX_PICTURE_BYTES``. ``what`` names it in the error."""
+    if not isinstance(data, bytes | bytearray) or not data.startswith(_JPEG_START):
+        raise ValueError(f"{what} must be the bytes of a JPEG")
+    if len(data) > MAX_PICTURE_BYTES:
+        raise ValueError(f"{what} can't be more than {MAX_PICTURE_BYTES} bytes")
+    return bytes(data)
 
 
 def _picture_stem(name: object) -> str | None:

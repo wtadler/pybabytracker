@@ -20,6 +20,7 @@ from pybabytracker import (
     decode_payload,
 )
 from pybabytracker import client as client_module
+from pybabytracker import models as models_module
 
 JPEG = b"\xff\xd8\xff\xe0invented-jpeg-bytes\xff\xd9"
 
@@ -171,7 +172,7 @@ async def test_a_picture_exactly_at_the_size_cap_comes_back(
 
 
 async def test_the_default_size_cap_is_twenty_megabytes() -> None:
-    assert client_module.MAX_PICTURE_BYTES == 20 * 1024 * 1024
+    assert models_module.MAX_PICTURE_BYTES == 20 * 1024 * 1024
 
 
 async def test_an_oversize_picture_is_still_an_error_when_the_session_has_to_sign_in_again(
