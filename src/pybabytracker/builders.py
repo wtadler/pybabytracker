@@ -262,6 +262,45 @@ def pictured_payload(
     return payload
 
 
+def common_changes(
+    *, time: datetime | None, timezone_offset: int | None, note: str | None
+) -> dict[str, Any]:
+    """The payload keys an edit of a record's time or note changes, checked. ``time`` (aware)
+    is written in UTC to the second. ``timezone`` changes only when ``timezone_offset`` is
+    given: an iPhone that moved a diaper's time by an hour left it alone (captured
+    2026-11-12)."""
+    changes: dict[str, Any] = {}
+    if time is not None:
+        if not isinstance(time, datetime):
+            raise ValueError("time must be a datetime")
+        _offset(time, "time")  # refuse a naive one
+        changes["time"] = format_time(time.astimezone(UTC).replace(microsecond=0))
+    if timezone_offset is not None:
+        if isinstance(timezone_offset, bool) or not isinstance(timezone_offset, int):
+            raise ValueError("timezone_offset must be a whole number of seconds")
+        changes["timezone"] = timezone_offset
+    if note is not None:
+        if not isinstance(note, str):
+            raise ValueError("note must be text")
+        changes["note"] = note
+    if not changes:
+        raise ValueError("give a time, a timezone_offset, or a note to change")
+    return changes
+
+
+def edited_payload(
+    record: Record, changes: Mapping[str, Any], timestamp: datetime
+) -> dict[str, Any]:
+    """The update that edits a saved record, as the iPhone app posts it: the record as last
+    saved (key order and unknown keys kept), with only the edited keys, ``newFlage`` false, and
+    ``timestamp`` changed. ``newFlage`` keeps its stored type, as in ``pictured_payload``."""
+    payload = record.to_payload()
+    payload.update(changes)
+    payload["newFlage"] = False if isinstance(payload.get("newFlage"), bool) else "false"
+    payload["timestamp"] = format_time(timestamp.astimezone(UTC))
+    return payload
+
+
 def draft_diaper(
     status: int, *, time: datetime | None, timezone_offset: int | None, note: str
 ) -> Draft[Diaper]:
