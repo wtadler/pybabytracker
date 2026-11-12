@@ -28,6 +28,25 @@ OP_DELETE = 2
 DIAPER_WET = 0
 DIAPER_DIRTY = 1
 DIAPER_MIXED = 2
+# A dry diaper, in the Android app's list of kinds. Read only: not yet seen in synced data, so
+# nothing writes it.
+DIAPER_DRY = 3
+# A diaper's ``amount``. Normal and not set are the two seen in synced data (the apps write
+# normal on a plain add); the other values are the Android app's own list.
+DIAPER_AMOUNT_NONE = 0
+DIAPER_AMOUNT_LIGHT = 1
+DIAPER_AMOUNT_NORMAL = 2
+DIAPER_AMOUNT_HEAVY = 3
+DIAPER_AMOUNT_OVERFLOW = 4
+DIAPER_AMOUNT_NOT_SET = 5
+DIAPER_AMOUNTS = (
+    DIAPER_AMOUNT_NONE,
+    DIAPER_AMOUNT_LIGHT,
+    DIAPER_AMOUNT_NORMAL,
+    DIAPER_AMOUNT_HEAVY,
+    DIAPER_AMOUNT_OVERFLOW,
+    DIAPER_AMOUNT_NOT_SET,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -787,6 +806,21 @@ class MedicationSelection(Record):
     amount_per_time: float | None = _opt("amountPerTime")
     interval: int | None = _opt("interval")
     prescription: bool | str | None = _opt("prescription")
+
+
+@_register
+@dataclass(kw_only=True)
+class OtherActivityDescription(Record):
+    """An activity type a user added to the app's pick list, such as "Bath". Both apps embed it
+    in each activity of that type as ``desc`` (seen from iOS and Android). It is expected to
+    sync as a transaction of its own when it is added, as a new food and a new medicine do
+    (expected shape, not yet seen in synced data): the Android app saves every kind of
+    pick-list entry the same way. The built-in types never sync: see ``BUILT_IN_ACTIVITIES``."""
+
+    object_type: ClassVar[str] = "OtherActivityDescription"
+
+    name: str | None = _opt("name")
+    desc: str | None = _opt("desc")
 
 
 @_register
