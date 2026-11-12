@@ -105,7 +105,7 @@ async def test_a_milestone_can_be_named_by_its_id(
     assert record.milestone_name == "Back home"
 
 
-async def test_a_milestone_added_in_the_app_can_be_logged_and_is_embedded_as_synced(
+async def test_a_milestone_added_in_the_app_can_be_logged_and_is_embedded_as_the_iphone_does(
     client: BabyTrackerClient, fake_server: FakeSyncServer
 ) -> None:
     custom = selection("CUSTOM-1", "First swim", desc=" swam")
@@ -115,7 +115,13 @@ async def test_a_milestone_added_in_the_app_can_be_logged_and_is_embedded_as_syn
     await engine.add_milestone(client, BABY_ID, "first swim", time=EVENT_TIME)
 
     [payload] = posted(fake_server)
-    assert payload["milestoneType"] == custom
+    # As the iPhone app embeds a food or a medicine synced on its own (#62, #69): everything as
+    # synced, but not new and dated 1970.
+    assert payload["milestoneType"] == {
+        **custom,
+        "newFlage": "false",
+        "timestamp": "1970-01-01 00:00:00 +0000",
+    }
 
 
 async def test_a_milestone_added_for_another_baby_is_not_offered(
