@@ -4,6 +4,8 @@ from ._version import __version__
 from .builders import (
     GROWTH_RANGES,
     MAX_ACTIVITY_MINUTES,
+    MAX_ACTIVITY_TYPE_NAME_LENGTH,
+    MAX_BABY_NAME_LENGTH,
     MAX_FOOD_NAME_LENGTH,
     MAX_MEDICINE_AMOUNT,
     MAX_MEDICINE_INTERVAL,
@@ -91,6 +93,7 @@ from .models import (
     Nursing,
     NursingSession,
     OtherActivity,
+    OtherActivityDescription,
     OtherFeed,
     OtherFeedSelection,
     Picture,
@@ -123,6 +126,8 @@ from .times import format_time, from_unix, parse_time, standard_offset_seconds, 
 from .totals import DayTotals, LastBreast, day_totals, last_breast
 
 __all__ = [
+    "MAX_ACTIVITY_TYPE_NAME_LENGTH",
+    "MAX_BABY_NAME_LENGTH",
     "MAX_MEDICINE_AMOUNT",
     "MAX_MEDICINE_INTERVAL",
     "GROWTH_RANGES",
@@ -186,6 +191,7 @@ __all__ = [
     "OP_UPDATE",
     "ObjectIdInUseError",
     "OtherActivity",
+    "OtherActivityDescription",
     "OtherFeed",
     "OtherFeedSelection",
     "ProtocolError",

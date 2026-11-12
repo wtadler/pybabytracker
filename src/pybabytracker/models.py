@@ -791,6 +791,21 @@ class MedicationSelection(Record):
 
 @_register
 @dataclass(kw_only=True)
+class OtherActivityDescription(Record):
+    """An activity type a user added to the app's pick list, such as "Bath". Both apps embed it
+    in each activity of that type as ``desc`` (seen from iOS and Android). It is expected to
+    sync as a transaction of its own when it is added, as a new food and a new medicine do
+    (expected shape, not yet seen in synced data): the Android app saves every kind of
+    pick-list entry the same way. The built-in types never sync: see ``BUILT_IN_ACTIVITIES``."""
+
+    object_type: ClassVar[str] = "OtherActivityDescription"
+
+    name: str | None = _opt("name")
+    desc: str | None = _opt("desc")
+
+
+@_register
+@dataclass(kw_only=True)
 class OtherFeedSelection(Record):
     """A food a user added to the app's pick list. Both apps sync a new food as a transaction
     of its own, just before the first solid food that names it (seen from iOS and Android).
