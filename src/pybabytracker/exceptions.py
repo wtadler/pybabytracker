@@ -157,7 +157,8 @@ class TimerNotRunningError(WriteError):
 
 class WrongRecordTypeError(WriteError):
     """The record isn't of the type the write needs (ending a timer needs a Sleep; adding
-    photos needs a joy, a milestone, or an activity)."""
+    photos needs a joy, a milestone, or an activity; deleting another device's record,
+    or editing one, needs a baby's record or a pump)."""
 
 
 class ValidationError(WriteError):
@@ -196,7 +197,8 @@ class InvalidSelectionNameError(ValidationError, ValueError):
 class SelectionExistsError(ValidationError):
     """A new pick-list entry was refused because one of that name is already on the list.
 
-    ``what`` says which list ("food"); ``object_id`` is the existing entry's, to use instead.
+    ``what`` says which list ("food", "medicine", or "activity"); ``object_id`` is the existing
+    entry's, to use instead.
     """
 
     def __init__(self, what: str, name: str, object_id: str) -> None:
@@ -204,6 +206,20 @@ class SelectionExistsError(ValidationError):
         self.what = what
         self.name = name
         self.object_id = object_id
+
+
+class EntryInUseError(ValidationError):
+    """A pick-list entry can't be deleted because records still name it.
+
+    The apps refuse such a delete from another device and post the entry back. ``what`` says
+    which list, ``object_id`` is the entry's, and ``users`` counts the records that name it.
+    """
+
+    def __init__(self, what: str, object_id: str, users: int) -> None:
+        super().__init__(f"{what} {object_id} is still named by {users} record(s)")
+        self.what = what
+        self.object_id = object_id
+        self.users = users
 
 
 class AmbiguousSelectionError(ValidationError):
