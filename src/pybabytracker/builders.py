@@ -32,8 +32,11 @@ from typing import Any, NamedTuple
 
 from .exceptions import NoUsualDoseError
 from .models import (
-    DIAPER_DIRTY,
-    DIAPER_MIXED,
+    DIAPER_AMOUNT_NONE,
+    DIAPER_AMOUNT_NORMAL,
+    DIAPER_AMOUNTS,
+    DIAPER_DRY,
+    DIAPER_STATUSES,
     DIAPER_WET,
     MEDIA_PHOTO,
     SIDE_LEFT,
@@ -56,8 +59,10 @@ from .models import (
     Medication,
     MedicationSelection,
     Milestone,
+    MilestoneSelection,
     Nursing,
     OtherActivity,
+    OtherActivityDescription,
     OtherFeed,
     OtherFeedSelection,
     Pump,
@@ -66,10 +71,13 @@ from .models import (
     Sleep,
     Temperature,
     Vaccine,
+    VaccineSelection,
     Volume,
     VolumeMeasure,
+    _is_deleted,
     _selection_name,
     check_jpeg,
+    numeric_code,
 )
 from .models import _number as _plain_number
 from .times import format_time
@@ -202,6 +210,45 @@ class NewPicture(NamedTuple):
     thumbnail: bytes
 
 
+def draft_baby(
+    name: str,
+    *,
+    birth: datetime,
+    boy: bool,
+    due: datetime | None,
+    picture_name: str | None,
+) -> Draft[Baby]:
+    """A new baby, with the keys an iPhone's ``Baby`` update has (captured 2026-11-12):
+    ``name``, ``dob``, ``gender`` ("true" for a boy), ``newFlage`` "true", and ``timestamp``,
+    plus ``dueDay`` and ``pictureName`` when there is a due date and a photo. The Android app's
+    new-baby screen asks for the same three things (a name, boy or girl, and a birth date) and
+    leaves the other two out when they aren't given. Dates are written in UTC to the second."""
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("a baby's name must be text")
+    written = name.strip()
+    if len(written) > MAX_BABY_NAME_LENGTH:
+        raise ValueError(f"a baby's name can't be longer than {MAX_BABY_NAME_LENGTH} characters")
+    if not isinstance(boy, bool):
+        raise ValueError("boy must be True or False")
+    dob = _edited_time(birth, "birth")
+    due_day = _edited_time(due, "due") if due is not None else None
+    gender = "true" if boy else "false"
+
+    def build(object_id: str, baby: Baby | None, timestamp: datetime) -> Baby:
+        return Baby(
+            object_id=object_id,
+            name=written,
+            dob=dob,
+            due_day=due_day,
+            gender=gender,
+            picture_name=picture_name,
+            new_flag="true",
+            timestamp=timestamp,
+        )
+
+    return Draft(Baby, build)
+
+
 def check_pictures(pictures: object) -> tuple[NewPicture, ...]:
     """``pictures`` as a tuple, or ``ValueError`` unless it is a sequence of ``NewPicture``s whose
     photo and thumbnail are each a JPEG of at most ``MAX_PICTURE_BYTES``."""
@@ -262,19 +309,470 @@ def pictured_payload(
     return payload
 
 
-def draft_diaper(
-    status: int, *, time: datetime | None, timezone_offset: int | None, note: str
-) -> Draft[Diaper]:
-    if status not in (DIAPER_WET, DIAPER_DIRTY, DIAPER_MIXED):
+@dataclass(frozen=True, slots=True)
+class Edit:
+    """What an edit changes in a saved record's payload: keys to set, and keys to drop."""
+
+    set: Mapping[str, Any]
+    drop: tuple[str, ...] = ()
+
+    def already_in(self, payload: Mapping[str, Any]) -> bool:
+        """Whether ``payload`` already holds every key to set with its new value, and none of
+        the keys to drop."""
+        return all(k in payload and payload[k] == v for k, v in self.set.items()) and not any(
+            k in payload for k in self.drop
+        )
+
+
+def common_changes(
+    *,
+    time: datetime | None,
+    timezone_offset: int | None,
+    note: str | None,
+    required: bool = True,
+) -> dict[str, Any]:
+    """The payload keys an edit of a record's time or note changes, checked. ``time`` (aware)
+    is written in UTC to the second. ``timezone`` changes only when ``timezone_offset`` is
+    given: an iPhone that moved a diaper's time by an hour left it alone (captured
+    2026-11-12). With ``required``, giving none of them raises."""
+    changes: dict[str, Any] = {}
+    if time is not None:
+        changes["time"] = _edited_time(time, "time")
+    if timezone_offset is not None:
+        if isinstance(timezone_offset, bool) or not isinstance(timezone_offset, int):
+            raise ValueError("timezone_offset must be a whole number of seconds")
+        changes["timezone"] = timezone_offset
+    if note is not None:
+        if not isinstance(note, str):
+            raise ValueError("note must be text")
+        changes["note"] = note
+    if required and not changes:
+        raise ValueError("give a time, a timezone_offset, or a note to change")
+    return changes
+
+
+def _edited_time(moment: object, name: str) -> str:
+    """An edited time as payloads carry it: UTC, to the second. A naive one is refused."""
+    if not isinstance(moment, datetime):
+        raise ValueError(f"{name} must be a datetime")
+    _offset(moment, name)
+    return format_time(moment.astimezone(UTC).replace(microsecond=0))
+
+
+def diaper_changes(status: int | None, amount: int | None = None) -> dict[str, Any]:
+    """A diaper's kind and amount, checked as for ``draft_diaper``. With no ``amount``, changing
+    the kind to dry sets the amount to none and changing it to wet sets it to normal, as the
+    Android app's diaper screen does; dirty and mixed leave it."""
+    changes: dict[str, Any] = {}
+    if status is not None:
+        changes["status"] = _checked_diaper_status(status)
+        if amount is None and status == DIAPER_DRY:
+            changes["amount"] = DIAPER_AMOUNT_NONE
+        elif amount is None and status == DIAPER_WET:
+            changes["amount"] = DIAPER_AMOUNT_NORMAL
+    if amount is not None:
+        changes["amount"] = _checked_diaper_amount(amount)
+    return changes
+
+
+def bottle_changes(volume: Volume | None) -> dict[str, Any]:
+    """A bottle's volume, checked and written as for ``draft_bottle``."""
+    if volume is None:
+        return {}
+    checked = _checked(volume)
+    if checked.value <= 0:
+        raise ValueError("a bottle's volume must be more than zero")  # also after rounding
+    return {"amount": _measure(checked).to_payload()}
+
+
+# The keys an iPhone's nursing timer leaves on a record, which its edit of the minutes drops.
+_NURSING_TIMER_KEYS = ("isDetailed", "pairSessionState", "state")
+
+
+def nursing_edit(
+    nursing: Nursing,
+    *,
+    left_minutes: int | None,
+    right_minutes: int | None,
+    finish_side: int | None,
+) -> Edit:
+    """A nursing's minutes and side, checked as for ``draft_nursing``. A side not given keeps
+    its saved minutes, and ``finishSide`` is kept unless given, as an iPhone's edit kept it.
+    When the minutes change, the timer keys are dropped, as that edit dropped them (captured
+    2026-11-12: ``rightDuration`` 0 to 7)."""
+    changes: dict[str, Any] = {}
+    if finish_side is not None:
+        if isinstance(finish_side, bool) or finish_side not in (SIDE_NONE, SIDE_LEFT, SIDE_RIGHT):
+            raise ValueError(
+                f"finish_side must be SIDE_LEFT, SIDE_RIGHT, or SIDE_NONE, not {finish_side!r}"
+            )
+        changes["finishSide"] = finish_side
+    if left_minutes is None and right_minutes is None:
+        return Edit(changes)
+    left = (
+        _minutes(left_minutes, "left_minutes")
+        if left_minutes is not None
+        else numeric_code(nursing.left_duration) or 0
+    )
+    right = (
+        _minutes(right_minutes, "right_minutes")
+        if right_minutes is not None
+        else numeric_code(nursing.right_duration) or 0
+    )
+    if left + right == 0:
+        raise ValueError("a nursing session needs at least one minute on a side")
+    if left_minutes is not None:
+        changes["leftDuration"] = left
+    if right_minutes is not None:
+        changes["rightDuration"] = right
+    return Edit(changes, _NURSING_TIMER_KEYS)
+
+
+def check_running_start(start: datetime, now: datetime | None = None) -> None:
+    """Refuse a running sleep's start (aware) in the future, beyond a minute of clock skew, or
+    more than 24 hours ago: such a sleep could never be ended inside the cap."""
+    current = now if now is not None else datetime.now(UTC)
+    if start - current > START_SKEW:
+        raise ValueError("a sleep can't start in the future")
+    if current - start > MAX_SLEEP:
+        raise ValueError("a sleep can't have started more than 24 hours ago")
+
+
+def sleep_changes(sleep: Sleep, *, start: datetime | None, end: datetime | None) -> dict[str, Any]:
+    """A sleep's start and end, checked as for ``draft_sleep``. The side not given is kept: a
+    new start keeps the saved end (so the length changes), and a running sleep stays running
+    until an end is given."""
+    if start is None and end is None:
+        return {}
+    changes: dict[str, Any] = {}
+    if start is not None:
+        changes["time"] = _edited_time(start, "start")
+    if end is not None:
+        _edited_time(end, "end")
+    begin = start if start is not None else sleep.time
+    if begin is None:
+        raise ValueError("the saved sleep has no start time")
+    saved_minutes = numeric_code(sleep.duration) or 0
+    if end is None:
+        if saved_minutes == 0 or sleep.time is None:
+            if start is not None:
+                check_running_start(start)  # running: only the start moves, as a new one's
+            return changes
+        end = sleep.time + timedelta(minutes=saved_minutes)
+    if end <= begin:
+        raise ValueError("end must be after start")
+    if end - begin > MAX_SLEEP:
+        raise ValueError("a sleep can't be longer than 24 hours")
+    changes["duration"] = sleep_minutes(begin, end)
+    return changes
+
+
+# The longest name of a baby, in characters.
+MAX_BABY_NAME_LENGTH = 50
+
+
+def baby_changes(
+    baby: Baby,
+    *,
+    name: str | None,
+    birth: datetime | None,
+    due: datetime | None,
+    boy: bool | None,
+) -> dict[str, Any]:
+    """The payload keys an edit of a baby changes, checked. ``birth`` and ``due`` (aware) are
+    written in UTC to the second, as ``dob`` and ``dueDay``. ``gender`` is true for a boy, and
+    keeps the type the saved baby has: the iPhone app writes "true" or "false", and Android a
+    JSON bool."""
+    changes: dict[str, Any] = {}
+    if name is not None:
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("a baby's name must be text")
+        if len(name.strip()) > MAX_BABY_NAME_LENGTH:
+            raise ValueError(
+                f"a baby's name can't be longer than {MAX_BABY_NAME_LENGTH} characters"
+            )
+        changes["name"] = name.strip()
+    if birth is not None:
+        changes["dob"] = _edited_time(birth, "birth")
+    if due is not None:
+        changes["dueDay"] = _edited_time(due, "due")
+    if boy is not None:
+        if not isinstance(boy, bool):
+            raise ValueError("boy must be True or False")
+        if isinstance(baby.gender, bool):
+            changes["gender"] = boy
+        else:
+            changes["gender"] = "true" if boy else "false"
+    return changes
+
+
+def _checked_dose(amount: object) -> int | float:
+    """A dose as written: a finite number above zero, also once rounded."""
+    if isinstance(amount, bool) or not isinstance(amount, int | float) or not _finite(amount):
+        raise ValueError("a dose's amount must be a finite number")
+    if amount <= 0 or _number(amount) <= 0:
+        raise ValueError("a dose's amount must be more than zero")
+    return _number(amount)
+
+
+def _checked_food_amount(amount: object) -> int | float:
+    """A solid food's amount as written: above zero and at most ``MAX_OTHER_FEED_AMOUNT``."""
+    if isinstance(amount, bool) or not isinstance(amount, int | float):
+        raise ValueError("amount must be a number")
+    if not _finite(amount) or _number(amount) <= 0:
+        raise ValueError("amount must be more than zero")
+    if amount > MAX_OTHER_FEED_AMOUNT:
+        raise ValueError(f"amount can't be more than {MAX_OTHER_FEED_AMOUNT}")
+    return _number(amount)
+
+
+def _checked_food_unit(unit: object) -> str:
+    """A solid food's unit as written: text, without surrounding spaces."""
+    if not isinstance(unit, str) or not unit.strip():
+        raise ValueError("unit must be text, such as 'Oz' or 'Pieces'")
+    if len(unit.strip()) > MAX_UNIT_LENGTH:
+        raise ValueError(f"unit can't be longer than {MAX_UNIT_LENGTH} characters")
+    return unit.strip()
+
+
+def _checked_activity_minutes(duration: object) -> int:
+    """An activity's length: whole minutes from 0 to ``MAX_ACTIVITY_MINUTES``."""
+    if isinstance(duration, bool) or not isinstance(duration, int):
+        raise ValueError("duration must be a whole number of minutes")
+    if duration < 0:
+        raise ValueError("duration can't be negative")
+    if duration > MAX_ACTIVITY_MINUTES:
+        raise ValueError(f"duration can't be more than {MAX_ACTIVITY_MINUTES} minutes")
+    return duration
+
+
+def temperature_changes(temperature: Measurement | None) -> dict[str, Any]:
+    """A temperature's reading, checked and written as for ``draft_temperature``."""
+    if temperature is None:
+        return {}
+    measure = _checked_measure(
+        "temperature", temperature, TEMPERATURE_RANGES, "TemperatureMeasure", {UNIT_FAHRENHEIT}
+    )
+    return {"temperature": dict(measure)}
+
+
+def growth_changes(
+    growth: Growth,
+    *,
+    weight: Measurement | None,
+    length: Measurement | None,
+    head: Measurement | None,
+) -> dict[str, Any]:
+    """A growth record's measurements, checked and written as for ``draft_growth``. One not
+    given is kept. Length and head share one unit in the apps, so a new one must be in the unit
+    of the other, given or saved."""
+    given = {"weight": weight, "length": length, "head": head}
+    changes = {
+        name: dict(
+            _checked_measure(
+                name, reading, GROWTH_RANGES[name], _GROWTH_MEASURES[name], _GROWTH_US_UNITS
+            )
+        )
+        for name, reading in given.items()
+        if reading is not None
+    }
+    saved_length, saved_head = growth.length_reading, growth.head_reading
+    length_unit = length.unit if length is not None else saved_length and saved_length.unit
+    head_unit = head.unit if head is not None else saved_head and saved_head.unit
+    if (
+        (length is not None or head is not None)
+        and length_unit
+        and head_unit
+        and length_unit != head_unit
+    ):
+        raise ValueError("length and head must be in the same unit")
+    return changes
+
+
+def medication_changes(amount: float | None) -> dict[str, Any]:
+    """A dose's amount, checked and written as for ``draft_medication``."""
+    return {} if amount is None else {"amount": _checked_dose(amount)}
+
+
+def other_feed_changes(amount: float | None, unit: str | None) -> dict[str, Any]:
+    """A solid food's amount and unit, checked and written as for ``draft_other_feed``."""
+    changes: dict[str, Any] = {}
+    if amount is not None:
+        changes["amount"] = VolumeMeasure(_checked_food_amount(amount), "true").to_payload()
+    if unit is not None:
+        changes["unit"] = _checked_food_unit(unit)
+    return changes
+
+
+def activity_changes(duration: int | None) -> dict[str, Any]:
+    """An activity's length, checked as for ``draft_activity``."""
+    return {} if duration is None else {"duration": _checked_activity_minutes(duration)}
+
+
+def pump_edit(
+    pump: Pump,
+    *,
+    amount: Volume | None,
+    left_volume: Volume | None,
+    right_volume: Volume | None,
+    left_minutes: int | None,
+    right_minutes: int | None,
+    finish_side: int | None,
+) -> Edit:
+    """A pump's volumes, minutes, and side, checked as for ``draft_pump``.
+
+    Give the total as ``amount``, or the volume of one or both sides, not both. A new total
+    drops the per-side amounts, like the app's own pump with only a total. With a side volume,
+    the other side keeps its saved volume (0 when it has none), both in one unit, and the total
+    becomes their sum. Minutes and the side not given are kept. The pump must still have a
+    volume or a length afterwards."""
+    if amount is not None and (left_volume is not None or right_volume is not None):
+        raise ValueError("give a pump's total volume or its side volumes, not both")
+    changes: dict[str, Any] = {}
+    drop: tuple[str, ...] = ()
+    if finish_side is not None:
+        if isinstance(finish_side, bool) or finish_side not in (SIDE_NONE, SIDE_LEFT, SIDE_RIGHT):
+            raise ValueError(
+                f"finish_side must be SIDE_LEFT, SIDE_RIGHT, or SIDE_NONE, not {finish_side!r}"
+            )
+        changes["finishSide"] = finish_side
+    left = numeric_code(pump.left_duration) or 0
+    right = numeric_code(pump.right_duration) or 0
+    if left_minutes is not None:
+        left = changes["leftDuration"] = _minutes(left_minutes, "left_minutes")
+    if right_minutes is not None:
+        right = changes["rightDuration"] = _minutes(right_minutes, "right_minutes")
+    saved = pump.volume
+    total: int | float = saved.value if saved is not None else 0
+    if amount is not None:
+        total_v = _checked(amount, "amount")
+        total = total_v.value
+        if total <= 0:
+            raise ValueError("a pump's total volume must be more than zero")
+        changes["amount"] = _measure(total_v).to_payload()
+        drop = ("leftAmount", "rightAmount")
+    elif left_volume is not None or right_volume is not None:
+        left_v = (
+            _checked(left_volume, "left_volume") if left_volume is not None else pump.left_volume
+        )
+        right_v = (
+            _checked(right_volume, "right_volume")
+            if right_volume is not None
+            else pump.right_volume
+        )
+        units = {v.unit for v in (left_v, right_v) if v is not None}
+        if len(units) != 1:
+            raise ValueError("both sides of a pump must use the same unit")
+        unit = units.pop()
+        left_amount = left_v.value if left_v is not None else 0
+        right_amount = right_v.value if right_v is not None else 0
+        total = round(left_amount + right_amount, 6)
+        if total <= 0:
+            raise ValueError("a pump's total volume must be more than zero")
+        changes["amount"] = _measure(Volume(total, unit)).to_payload()
+        changes["leftAmount"] = _measure(Volume(left_amount, unit)).to_payload()
+        changes["rightAmount"] = _measure(Volume(right_amount, unit)).to_payload()
+    if total <= 0 and left + right == 0:
+        raise ValueError("a pump needs a volume for at least one side, or a length")
+    return Edit(changes, drop)
+
+
+def removed_pictures(record: Record, wanted: Sequence[str] | None) -> Edit:
+    """The edit that removes photos from a record: each one's ``pictureNote`` entry stays, with
+    ``deleted`` set, as the Android app marks a removed photo and saves the record. ``deleted``
+    keeps the type the entry has: "true" where the iPhone app wrote "false", and a JSON
+    ``true`` where Android wrote ``false``.
+
+    ``wanted`` names the photos by ``Picture.object_id`` or ``file_name``, in either case;
+    ``None`` removes every photo. A name the record has no photo for raises ``ValueError``.
+    """
+    entries = record.to_payload().get("pictureNote")
+    listed = list(entries) if isinstance(entries, list) else []
+    live = [
+        i
+        for i, entry in enumerate(listed)
+        if isinstance(entry, dict) and not _is_deleted(entry.get("deleted"))
+    ]
+    if wanted is None:
+        targets = set(live)
+    else:
+        if isinstance(wanted, str | bytes) or not isinstance(wanted, Sequence) or not wanted:
+            raise ValueError("pictures must be a list of picture IDs, or None for every picture")
+        targets = set()
+        for name in wanted:
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError("each picture must be named by its ID")
+            key = name.strip().upper()
+            found = [
+                i
+                for i in live
+                if key
+                in (str(listed[i].get("objectID")).upper(), str(listed[i].get("fileName")).upper())
+            ]
+            if not found:
+                raise ValueError(f"record {record.object_id} has no picture {name!r}")
+            targets.update(found)
+    if not targets:
+        return Edit({})
+    changed = [
+        {**entry, "deleted": True if isinstance(entry.get("deleted"), bool) else "true"}
+        if i in targets
+        else entry
+        for i, entry in enumerate(listed)
+    ]
+    return Edit({"pictureNote": changed})
+
+
+def edited_payload(record: Record, edit: Edit, timestamp: datetime) -> dict[str, Any]:
+    """The update that edits a saved record, as the iPhone app posts it: the record as last
+    saved (key order and unknown keys kept), with only the edited keys, ``newFlage`` false, and
+    ``timestamp`` changed. ``newFlage`` keeps its stored type, as in ``pictured_payload``."""
+    payload = record.to_payload()
+    payload.update(edit.set)
+    for key in edit.drop:
+        payload.pop(key, None)
+    payload["newFlage"] = False if isinstance(payload.get("newFlage"), bool) else "false"
+    payload["timestamp"] = format_time(timestamp.astimezone(UTC))
+    return payload
+
+
+def _checked_diaper_status(status: object) -> int:
+    """A diaper's kind: one of ``DIAPER_STATUSES``."""
+    if isinstance(status, bool) or not isinstance(status, int) or status not in DIAPER_STATUSES:
         raise ValueError(f"unknown diaper status: {status!r}")
+    return status
+
+
+def _checked_diaper_amount(amount: object) -> int:
+    """A diaper's amount: one of ``DIAPER_AMOUNTS``."""
+    if isinstance(amount, bool) or not isinstance(amount, int) or amount not in DIAPER_AMOUNTS:
+        raise ValueError(f"unknown diaper amount: {amount!r}")
+    return amount
+
+
+def draft_diaper(
+    status: int,
+    *,
+    time: datetime | None,
+    timezone_offset: int | None,
+    note: str,
+    amount: int | None = None,
+) -> Draft[Diaper]:
+    """A diaper. With no ``amount``, a dry one gets none and any other a normal amount, as the
+    Android app's diaper screen saves them."""
+    _checked_diaper_status(status)
+    if amount is None:
+        amount = DIAPER_AMOUNT_NONE if status == DIAPER_DRY else DIAPER_AMOUNT_NORMAL
+    written_amount = _checked_diaper_amount(amount)
     event, tz, text = _common(time, timezone_offset, note)
 
     def build(object_id: str, baby: Baby | None, timestamp: datetime) -> Diaper:
         return Diaper(
             **_base(object_id, baby, timestamp, event, tz, text),
             status=status,
-            # What the app filled in on the captured add (PROTOCOL.md) with only a type set.
-            amount=2,
+            # What the app filled in on the captured add (PROTOCOL.md) with only a type set:
+            # a normal amount, and these.
+            amount=written_amount,
             pee_color=5,
             poo_color=5,
             texture=5,
@@ -292,7 +790,9 @@ def draft_milestone(
     note: str,
 ) -> Draft[Milestone]:
     """A milestone reached, embedding the milestone it marks as ``milestoneType``."""
-    embedded = dict(selection)
+    # An iPhone-shaped entry (typed) is embedded as the iPhone app embeds one: not new, and dated
+    # 1970. One of any other shape, such as an Android phone's, is embedded as it synced.
+    embedded = embedded_milestone(selection)
     event, tz, text = _common(time, timezone_offset, note)
 
     def build(object_id: str, baby: Baby | None, timestamp: datetime) -> Milestone:
@@ -325,13 +825,11 @@ def draft_activity(
     keys the iPhone app sends, and not ``descID`` or ``locationID``, which the model reads but
     the app keeps in its local database.
     """
-    if isinstance(duration, bool) or not isinstance(duration, int):
-        raise ValueError("duration must be a whole number of minutes")
-    if duration < 0:
-        raise ValueError("duration can't be negative")
-    if duration > MAX_ACTIVITY_MINUTES:
-        raise ValueError(f"duration can't be more than {MAX_ACTIVITY_MINUTES} minutes")
-    embedded = dict(selection)
+    _checked_activity_minutes(duration)
+    # An iPhone-shaped type (typed) is embedded as the iPhone app embeds one: not new, and dated
+    # 1970, as every custom type in the iPhone's synced activities is. One of any other shape,
+    # such as an Android phone's, is embedded as it synced.
+    embedded = embedded_activity_type(selection)
     event, tz, text = _common(time, timezone_offset, note)
 
     def build(object_id: str, baby: Baby | None, timestamp: datetime) -> OtherActivity:
@@ -482,6 +980,67 @@ def _embedded(type_name: str, selection: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _embedded_if_typed(type_name: str, selection: Mapping[str, Any]) -> dict[str, Any]:
+    """An iPhone-shaped entry (typed) as the iPhone app embeds one; one of any other shape, such
+    as an Android phone's, as it synced."""
+    return _embedded(type_name, selection) if "BCObjectType" in selection else dict(selection)
+
+
+def embedded_milestone(selection: Mapping[str, Any]) -> dict[str, Any]:
+    """A milestone as a record embeds it under ``milestoneType``."""
+    return _embedded_if_typed("MilestoneSelection", selection)
+
+
+def embedded_vaccine(selection: Mapping[str, Any]) -> dict[str, Any]:
+    """A vaccine as a record embeds it under ``vaccineType``."""
+    return _embedded_if_typed("VaccineSelection", selection)
+
+
+def embedded_activity_type(selection: Mapping[str, Any]) -> dict[str, Any]:
+    """An activity type as an activity embeds it under ``desc``."""
+    return _embedded_if_typed("OtherActivityDescription", selection)
+
+
+def embedded_food(selection: Mapping[str, Any]) -> dict[str, Any]:
+    """A food as a solid food embeds it under ``feedType``."""
+    return _embedded("OtherFeedSelection", selection)
+
+
+def embedded_medicine(selection: Mapping[str, Any]) -> dict[str, Any]:
+    """A medicine as a dose embeds it under ``medicationSelection``. iPhone-shaped here means it
+    has the iPhone's "isPresciption" flag; an Android phone's has "prescription" instead."""
+    if "isPresciption" in selection:
+        return _embedded("MedicationSelection", selection)
+    return dict(selection)
+
+
+def entry_change(
+    record: Record,
+    key: str,
+    id_key: str,
+    embedded: Mapping[str, Any] | None,
+    other: Mapping[str, Any],
+) -> Edit:
+    """The edit that makes a saved record name another pick-list entry, with any ``other``
+    changes: ``embedded`` (the entry as the record embeds one) goes under ``key``, and
+    ``id_key``, where a seed row keeps an entry's plain ID instead, is dropped so the record
+    names one entry. An entry the record already names, by either key and in any case, is left
+    as it is saved. ``None`` changes no entry."""
+    changes = dict(other)
+    if embedded is None:
+        return Edit(changes)
+    payload = record.to_payload()
+    saved = payload.get(key)
+    named = (saved.get("objectID") if isinstance(saved, Mapping) else None, payload.get(id_key))
+    wanted = embedded.get("objectID")
+    if isinstance(wanted, str) and wanted.lower() in {
+        n.lower() for n in named if isinstance(n, str)
+    }:
+        return Edit(changes)
+    changes[key] = dict(embedded)
+    return Edit(changes, (id_key,))
+
+
 def draft_other_feed(
     selection: Mapping[str, Any],
     *,
@@ -500,21 +1059,11 @@ def draft_other_feed(
     ``objectID`` is shared by the foods logged together, as the app does, so give each food of
     one meal the same ``meal_id``.
     """
-    if isinstance(amount, bool) or not isinstance(amount, int | float):
-        raise ValueError("amount must be a number")
-    if not _finite(amount) or _number(amount) <= 0:
-        raise ValueError("amount must be more than zero")
-    if amount > MAX_OTHER_FEED_AMOUNT:
-        raise ValueError(f"amount can't be more than {MAX_OTHER_FEED_AMOUNT}")
-    if not isinstance(unit, str) or not unit.strip():
-        raise ValueError("unit must be text, such as 'Oz' or 'Pieces'")
-    if len(unit.strip()) > MAX_UNIT_LENGTH:
-        raise ValueError(f"unit can't be longer than {MAX_UNIT_LENGTH} characters")
+    value = _checked_food_amount(amount)
+    written_unit = _checked_food_unit(unit)
     if not isinstance(meal_id, str) or not meal_id.strip():
         raise ValueError("meal_id must be text")
-    embedded = _embedded("OtherFeedSelection", selection)
-    written_unit = unit.strip()
-    value = _number(amount)
+    embedded = embedded_food(selection)
     desc = {
         "BCObjectType": "FeedDescription",
         "newFlage": "true",
@@ -533,6 +1082,97 @@ def draft_other_feed(
         )
 
     return Draft(OtherFeed, build)
+
+
+# The longest name and description of a milestone or vaccine added to the pick list.
+MAX_PICK_LIST_NAME_LENGTH = 50
+MAX_PICK_LIST_DESCRIPTION_LENGTH = 200
+
+
+def _checked_entry_name(name: object, what: str) -> str:
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError(f"a {what}'s name must be text")
+    if len(name.strip()) > MAX_PICK_LIST_NAME_LENGTH:
+        raise ValueError(
+            f"a {what}'s name can't be longer than {MAX_PICK_LIST_NAME_LENGTH} characters"
+        )
+    return name.strip()
+
+
+def draft_milestone_type(name: str) -> Draft[MilestoneSelection]:
+    """A new milestone for the pick list, for every baby. The Android app makes one from a name
+    alone, leaving ``forAge`` 0 and ``used`` false, so this writes those in the form a built-in
+    milestone's embedded copy has on iOS (``forAge`` 0, ``used`` "false"), with ``newFlage``
+    "true" and no record fields. The name is written without surrounding spaces."""
+    written = _checked_entry_name(name, "milestone")
+
+    def build(object_id: str, baby: Baby | None, timestamp: datetime) -> MilestoneSelection:
+        return MilestoneSelection(
+            object_id=object_id,
+            name=written,
+            for_age=0,
+            used="false",
+            new_flag="true",
+            timestamp=timestamp,
+        )
+
+    return Draft(MilestoneSelection, build)
+
+
+def draft_vaccine_type(name: str, *, description: str) -> Draft[VaccineSelection]:
+    """A new vaccine for the pick list. The Android app makes one from a name and a description,
+    leaving ``forAge`` 0, so this writes those in the form a built-in vaccine's embedded copy
+    has on iOS, with ``newFlage`` "true" and no record fields. ``desc`` is left out when there
+    is no description, as an iPhone's new food has none. Text is written without surrounding
+    spaces."""
+    written = _checked_entry_name(name, "vaccine")
+    if not isinstance(description, str):
+        raise ValueError("a vaccine's description must be text")
+    text = description.strip()
+    if len(text) > MAX_PICK_LIST_DESCRIPTION_LENGTH:
+        raise ValueError(
+            "a vaccine's description can't be longer than "
+            f"{MAX_PICK_LIST_DESCRIPTION_LENGTH} characters"
+        )
+
+    def build(object_id: str, baby: Baby | None, timestamp: datetime) -> VaccineSelection:
+        return VaccineSelection(
+            object_id=object_id,
+            name=written,
+            desc=text or None,
+            for_age=0,
+            new_flag="true",
+            timestamp=timestamp,
+        )
+
+    return Draft(VaccineSelection, build)
+
+
+# The longest name of an activity type added to the pick list, in characters.
+MAX_ACTIVITY_TYPE_NAME_LENGTH = 50
+
+
+def draft_activity_type(name: str) -> Draft[OtherActivityDescription]:
+    """A new activity type for the pick list, in the shape an iPhone's new food has with a
+    food's own ``bottle`` left out: ``BCObjectType``, ``objectID``, ``name``, ``newFlage``
+    "true", and ``timestamp``, with no record fields. That is also the copy the iPhone app
+    embeds in an activity of a custom type, apart from ``newFlage`` and ``timestamp``. The
+    name is written without surrounding spaces."""
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("an activity type's name must be text")
+    written = name.strip()
+    if len(written) > MAX_ACTIVITY_TYPE_NAME_LENGTH:
+        raise ValueError(
+            "an activity type's name can't be longer than "
+            f"{MAX_ACTIVITY_TYPE_NAME_LENGTH} characters"
+        )
+
+    def build(object_id: str, baby: Baby | None, timestamp: datetime) -> OtherActivityDescription:
+        return OtherActivityDescription(
+            object_id=object_id, name=written, new_flag="true", timestamp=timestamp
+        )
+
+    return Draft(OtherActivityDescription, build)
 
 
 # The longest name of a food added to the pick list, in characters.
@@ -665,22 +1305,12 @@ def draft_medication(
     # iPhone-shaped means it has the iPhone's "isPresciption" flag. An Android phone's medicine
     # has "prescription" instead, with JSON booleans, and nothing shows how either app reads a
     # mix of the two, so it keeps its own shape.
-    embedded = (
-        _embedded("MedicationSelection", selection)
-        if "isPresciption" in selection
-        else dict(selection)
-    )
+    embedded = embedded_medicine(selection)
     if amount is None:
         amount = _usual_dose(embedded)
         if amount is None:
             raise NoUsualDoseError(_selection_name(embedded))
-    if isinstance(amount, bool) or not isinstance(amount, int | float) or not _finite(amount):
-        raise ValueError("a dose's amount must be a finite number")
-    if amount <= 0:
-        raise ValueError("a dose's amount must be more than zero")
-    dose = _number(amount)
-    if dose <= 0:
-        raise ValueError("a dose's amount must be more than zero")  # also after rounding
+    dose = _checked_dose(amount)
     event, tz, text = _common(time, timezone_offset, note)
 
     def build(object_id: str, baby: Baby | None, timestamp: datetime) -> Medication:
@@ -706,7 +1336,9 @@ def draft_vaccine(
     synced data), and not ``vaccID`` or ``docVisitID``, which the model reads but the app keeps
     in its local database.
     """
-    embedded = dict(selection)
+    # An iPhone-shaped entry (typed) is embedded as the iPhone app embeds one: not new, and dated
+    # 1970. One of any other shape, such as an Android phone's, is embedded as it synced.
+    embedded = embedded_vaccine(selection)
     event, tz, text = _common(time, timezone_offset, note)
 
     def build(object_id: str, baby: Baby | None, timestamp: datetime) -> Vaccine:
@@ -822,10 +1454,7 @@ def draft_sleep_start(
     current = now if now is not None else datetime.now(UTC)
     begin = start if start is not None else current
     _offset(begin, "start")
-    if begin - current > START_SKEW:
-        raise ValueError("a sleep can't start in the future")
-    if current - begin > MAX_SLEEP:
-        raise ValueError("a sleep can't have started more than 24 hours ago")
+    check_running_start(begin, current)
     event, tz, text = _common(begin, timezone_offset, note)
 
     def build(object_id: str, baby: Baby | None, timestamp: datetime) -> Sleep:
