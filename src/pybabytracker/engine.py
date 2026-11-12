@@ -17,6 +17,10 @@ Rules:
   - An add or update from another device brings a deleted record back only with a strictly
     newer timestamp than the tombstone.
 
+- The apps' two repair operations, Relive (opcode 3) and Conflict (opcode 4), are recognized and
+  not applied. A Relive brings back a baby or pick-list entry whose delete a device refused
+  because records still use it; those records already keep it in ``babies()`` and the choice
+  lists. A Conflict pairs two babies or entries of one name; both stay.
 - A transaction that can't be decoded, has an unknown opcode, or has no ``objectID`` is
   skipped with a warning and never stops the sync. A record of an unknown type, or of a known
   type with values the models don't understand, is kept raw.
@@ -138,7 +142,9 @@ from .exceptions import (
 )
 from .models import (
     OP_ADD,
+    OP_CONFLICT,
     OP_DELETE,
+    OP_RELIVE,
     OP_UPDATE,
     RECORD_TYPES,
     UNIT_OUNCES,
@@ -1501,6 +1507,18 @@ class SyncEngine:
 
     def _apply_one(self, device_uuid: str, transaction: RawTransaction) -> bool:
         where = f"device {device_uuid} number {transaction.sync_id}"
+        if transaction.op_code in (OP_RELIVE, OP_CONFLICT):
+            # The apps' repair operations. A Relive needs no change here: it is only posted for
+            # a baby or pick-list entry that records still use, and ``babies()`` and the choice
+            # lists are built from those records as well as from the entry's own record. A
+            # Conflict isn't merged: both entries stay, so a lookup by their shared name raises
+            # ``AmbiguousSelectionError`` naming both IDs.
+            _LOGGER.debug(
+                "Not applying %s (%s)",
+                "a Relive" if transaction.op_code == OP_RELIVE else "a Conflict",
+                where,
+            )
+            return False
         if transaction.op_code not in (OP_ADD, OP_UPDATE, OP_DELETE):
             _LOGGER.warning(
                 "Skipping transaction with unknown opcode %s (%s)", transaction.op_code, where

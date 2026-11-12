@@ -296,6 +296,11 @@ Across devices the result doesn't depend on which device is fetched first:
   leaves a tombstone, so a delete that arrives before the add it targets still wins.
 - An add or update from another device brings a deleted record back only with a strictly newer
   timestamp than the tombstone. Within one device, a later add always wins.
+- The apps' two repair operations, Relive (`OP_RELIVE`, 3) and Conflict (`OP_CONFLICT`, 4), are
+  recognized and not applied. A Relive brings back a baby or pick-list entry whose delete a
+  device refused because records still use it, and those records already keep it in `babies()`
+  and the choice lists. A Conflict pairs two babies or entries of one name; both stay, so look
+  one up by ID. Neither has been seen in synced data.
 
 Tombstones are saved by `to_dict()`. State saved by an older version (1) loads with none.
 A payload that can't be decoded at all is skipped with a warning, and the sync moves past it. A
