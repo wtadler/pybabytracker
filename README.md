@@ -322,6 +322,31 @@ the size cap), is warned about and skipped. Saved state records the seed format 
 characters. Pick-list entries in the seed aren't records of their own; the records that use them
 carry them, as synced records do.
 
+### A new account
+
+An account can be set up with no phone. The app makes an account by creating its sync group from
+its own database, so `new_seed` makes the database of a newly installed app with one baby, and
+`create_group` uploads it:
+
+```python
+from datetime import UTC, datetime
+from pybabytracker import new_seed
+
+client = BabyTrackerClient(email, password, "NEW-DEVICE-UUID", "Home Assistant", session=session)
+await client.create_group(new_seed("Ada", birth=datetime(2026, 10, 1, tzinfo=UTC), boy=False))
+engine = SyncEngine(device_uuid="NEW-DEVICE-UUID")
+await engine.sync(client)  # reads the new seed
+[baby_id] = engine.babies()
+```
+
+For an email address the service doesn't know, `create_group` creates the account with the
+client's password. For one that already has a group it raises `GroupExistsError` and changes
+nothing; it never replaces a group. The seed has every table and index the Android app creates,
+and the pick-list entries it ships with, checked against a real account's seed. Seen against the
+live service: an account made this way signs in, gives its seed back, and takes records from two
+devices. A new group lists no device until one posts. An Android phone then joined the group and
+showed every record. Not yet seen: an iPhone joining one.
+
 ## Command line
 
 ```sh

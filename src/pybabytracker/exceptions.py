@@ -13,6 +13,11 @@ class AuthenticationError(BabyTrackerError):
     """The email or password was rejected, or a fresh sign-in did not stick."""
 
 
+class GroupExistsError(BabyTrackerError):
+    """The account already has a sync group, so ``BabyTrackerClient.create_group`` can't make
+    one for it."""
+
+
 class BabyTrackerConnectionError(BabyTrackerError):
     """The service could not be reached, timed out, or answered with a server error."""
 

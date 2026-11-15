@@ -22,6 +22,7 @@ from .exceptions import (
     AuthenticationError,
     BabyTrackerConnectionError,
     DownloadRefusedError,
+    GroupExistsError,
     NoResponseError,
     ProtocolError,
 )
@@ -35,6 +36,9 @@ USER_AGENT = f"pybabytracker/{__version__}"
 MAX_SEED_BYTES = 64 * 1024 * 1024
 # The multipart boundary the apps use for a picture upload.
 _PICTURE_BOUNDARY = "__BABY_TRACKER_BOUNDARY____Photo__"
+# The multipart boundary the apps use for a seed upload, and how a zip file starts.
+_SEED_BOUNDARY = "__BABY_TRACKER_BOUNDARY____SEED__"
+_ZIP_START = b"PK\x03\x04"
 # A seed can be large, so it gets longer than other requests, as long as data keeps coming.
 SEED_TIMEOUT = 600.0
 
@@ -140,22 +144,22 @@ class BabyTrackerClient:
         async with self._sign_in_lock:
             return await self._sign_in()
 
+    def _user_info(self) -> dict[str, Any]:
+        """The body the apps post to sign in, and to create a sync group."""
+        return {
+            "EmailAddress": self._email,
+            "Password": self._password,
+            "Device": {
+                "DeviceUUID": self._device_uuid,
+                "DeviceName": self._device_name,
+                "DeviceOSInfo": self._device_os_info,
+            },
+            "AppInfo": {"AppType": 0, "AccountType": 0},
+        }
+
     async def _sign_in(self) -> int:
         self._signed_in = False
-        status, text = await self._send(
-            "POST",
-            "/session",
-            {
-                "EmailAddress": self._email,
-                "Password": self._password,
-                "Device": {
-                    "DeviceUUID": self._device_uuid,
-                    "DeviceName": self._device_name,
-                    "DeviceOSInfo": self._device_os_info,
-                },
-                "AppInfo": {"AppType": 0, "AccountType": 0},
-            },
-        )
+        status, text = await self._send("POST", "/session", self._user_info())
         if status == 401 and _is_reset_reply(text):
             # Every device from before a reset is refused; the app joins as a new device.
             raise AccountResetError(self._account_id)
@@ -173,6 +177,73 @@ class BabyTrackerClient:
         self._generation += 1
         self._account_id = account_id
         return account_id
+
+    async def create_group(self, seed: bytes | bytearray) -> None:
+        """Create the account's sync group from a seed, as the app does when sync is first
+        turned on. For an email address the service doesn't know, this creates the account with
+        this client's password, so it is how an account is set up from nothing.
+
+        ``seed`` is a zip of the app's database: ``new_seed`` makes one for a new account, and
+        ``get_seed`` returns one in the same form. The steps are the app's: ``POST
+        /staging_account`` with the sign-in body, the seed to ``/staging_account/seed`` (a
+        multipart POST of the file in a ``seed`` field, named "seed.zip", of type
+        ``application/zip``), and ``PUT /staging_account`` to finish. The app also uploads each
+        picture its database names before it finishes, which this doesn't do, so pass a seed
+        that names none.
+
+        ``GroupExistsError`` means the account already has a group, ``AuthenticationError`` that
+        the service refused the first step, and ``ProtocolError`` that it couldn't build the
+        group from the seed, or redirected the upload. A seed that isn't a zip, or is over
+        ``MAX_SEED_BYTES``, raises ``ValueError`` before any request. Nothing is retried: after a
+        failure, call it again.
+
+        Afterwards this client is signed out, and its next call signs in to the new group as
+        this client's device. The group lists no device until one posts. Use a ``SyncEngine``
+        that has no saved state with it.
+        """
+        if not isinstance(seed, bytes | bytearray) or not bytes(seed).startswith(_ZIP_START):
+            raise ValueError("a seed must be the bytes of a zip file")
+        if len(seed) > MAX_SEED_BYTES:
+            raise ValueError(f"a seed can't be more than {MAX_SEED_BYTES} bytes")
+        head = (
+            f"\r\n--{_SEED_BOUNDARY}\r\n"
+            'Content-Disposition: form-data; name="seed"; filename="seed.zip"\r\n'
+            "Content-Type: application/zip\r\n\r\n"
+        ).encode()
+        form = head + bytes(seed) + f"\r\n--{_SEED_BOUNDARY}--\r\n".encode()
+        async with self._sign_in_lock:
+            self._signed_in = False
+            status, _ = await self._send("POST", "/staging_account", self._user_info())
+            if status == 409:
+                raise GroupExistsError("the account already has a sync group")
+            if status in (401, 403):
+                raise AuthenticationError("the service rejected the email or password")
+            _raise_for_status(status)
+            status, _ = await self._exchange(
+                "POST",
+                "/staging_account/seed",
+                None,
+                lambda response: response.text(),
+                allow_redirects=False,
+                limits=aiohttp.ClientTimeout(total=SEED_TIMEOUT, sock_read=self._timeout.total),
+                data=form,
+                content_type=f"multipart/form-data; boundary={_SEED_BOUNDARY}",
+            )
+            if 300 <= status < 400:
+                raise ProtocolError(f"the service redirected the seed upload (HTTP {status})")
+            if status == 401:
+                raise AuthenticationError("the service rejected the seed upload")
+            _raise_for_status(status)
+            status, _ = await self._send("PUT", "/staging_account")
+            if status == 409:
+                raise GroupExistsError("the account already has a sync group")
+            if status == 424:
+                raise ProtocolError("the service could not build the group from the seed")
+            if status == 401:
+                raise AuthenticationError("the service rejected the last step")
+            _raise_for_status(status)
+            # Any earlier AccountID was another group's.
+            self._account_id = None
 
     async def get_devices(self) -> list[Device]:
         """Every device in the sync group, with its last transaction number."""
