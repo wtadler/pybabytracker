@@ -88,9 +88,18 @@ from typing import Any, Protocol
 
 from .builders import (
     Draft,
+    Edit,
     NewPicture,
+    _checked_entry_name,
+    activity_changes,
+    baby_changes,
+    bottle_changes,
     check_pictures,
+    common_changes,
+    diaper_changes,
     draft_activity,
+    draft_activity_type,
+    draft_baby,
     draft_bottle,
     draft_diaper,
     draft_food,
@@ -99,6 +108,7 @@ from .builders import (
     draft_medication,
     draft_medicine,
     draft_milestone,
+    draft_milestone_type,
     draft_nursing,
     draft_other_feed,
     draft_pump,
@@ -106,10 +116,20 @@ from .builders import (
     draft_sleep_start,
     draft_temperature,
     draft_vaccine,
+    draft_vaccine_type,
+    edited_payload,
     ended_sleep_payload,
+    growth_changes,
+    medication_changes,
+    nursing_edit,
+    other_feed_changes,
     picture_entry,
     pictured_payload,
+    pump_edit,
+    removed_pictures,
     resolve_sleep_end,
+    sleep_changes,
+    temperature_changes,
 )
 from .client import Device, RawTransaction
 from .exceptions import (
@@ -117,6 +137,7 @@ from .exceptions import (
     AuthenticationError,
     BabyTrackerError,
     DownloadRefusedError,
+    EntryInUseError,
     InvalidSelectionNameError,
     NoResponseError,
     NotOwnRecordError,
@@ -153,7 +174,9 @@ from .models import (
     Milestone,
     MilestoneSelection,
     Nursing,
+    NursingSession,
     OtherActivity,
+    OtherActivityDescription,
     OtherFeed,
     OtherFeedSelection,
     Pump,
@@ -165,6 +188,7 @@ from .models import (
     Vaccine,
     VaccineSelection,
     Volume,
+    check_jpeg,
     decode_payload,
     decode_transaction,
     encode_transaction,
@@ -183,6 +207,27 @@ from .selections import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# What ``delete_record`` won't delete for another device, and ``edit_record`` won't edit: the
+# apps refuse to delete a baby or a pick-list entry that is still in use, they aren't records
+# with a time and a note, and an unknown type can't be checked.
+# The pick lists' own record types. An entry can be renamed, and deleted once no record names it.
+_PICK_LIST_TYPES = (
+    MedicationSelection,
+    MilestoneSelection,
+    OtherActivityDescription,
+    OtherFeedSelection,
+    VaccineSelection,
+)
+_NOT_DELETABLE_FROM_OTHERS = (
+    Baby,
+    MedicationSelection,
+    MilestoneSelection,
+    OtherActivityDescription,
+    OtherFeedSelection,
+    VaccineSelection,
+    UnknownRecord,
+)
 
 STATE_VERSION = 4
 # How this library reads a seed. Raise it when a fix reads more out of seeds: state saved at an
@@ -311,7 +356,7 @@ class SyncEngine:
         self._pending: _Pending | None = None
         self._created: set[str] = set()
         self._add_numbers: dict[str, int] = {}  # object_id -> number of this device's add
-        # Objects this device posted an update to (a sleep's end, or photos added).
+        # Objects this device posted an update to (a sleep's end, photos added, or an edit).
         self._own_updates: set[str] = set()
         self._logged_unknown_types: set[str] = set()
         self._account_id: int | None = None
@@ -402,6 +447,7 @@ class SyncEngine:
         baby_id: str,
         status: int,
         *,
+        amount: int | None = None,
         time: datetime | None = None,
         timezone_offset: int | None = None,
         note: str = "",
@@ -409,7 +455,10 @@ class SyncEngine:
     ) -> Diaper:
         """Post a new diaper for a baby known from sync, and apply it locally.
 
-        ``status`` is ``DIAPER_WET``, ``DIAPER_DIRTY``, or ``DIAPER_MIXED``. ``time`` (aware)
+        ``status`` is ``DIAPER_WET``, ``DIAPER_DIRTY``, ``DIAPER_MIXED``, or ``DIAPER_DRY``.
+        ``amount`` is one of ``DIAPER_AMOUNTS``; left out, it is ``DIAPER_AMOUNT_NORMAL``,
+        which is what the apps write when only a kind is picked, or ``DIAPER_AMOUNT_NONE`` for
+        a dry diaper, as the Android app saves one. ``time`` (aware)
         defaults to now. ``timezone_offset`` (seconds east of UTC) defaults to ``time``'s offset.
         The app itself writes the zone's *standard* offset all year, ignoring daylight saving
         (-18000 for Eastern in July and January), so for a record that matches it pass
@@ -419,7 +468,9 @@ class SyncEngine:
         to another device's id apart from case raises ``ObjectIdInUseError``. Every ``add_*``
         method shares these rules. Bad input raises ``ValueError`` before any request.
         """
-        draft = draft_diaper(status, time=time, timezone_offset=timezone_offset, note=note)
+        draft = draft_diaper(
+            status, time=time, timezone_offset=timezone_offset, note=note, amount=amount
+        )
         return await self._add(target, baby_id, draft, object_id)
 
     async def add_joy(
@@ -485,6 +536,571 @@ class SyncEngine:
             await self._send(target, number, OP_UPDATE, encode_transaction(updated))
             return updated
 
+    async def edit_record(
+        self,
+        target: WriteTarget,
+        object_id: str,
+        *,
+        time: datetime | None = None,
+        timezone_offset: int | None = None,
+        note: str | None = None,
+    ) -> Record:
+        """Change the time or the note of a saved record, whichever device made it: post an
+        update (opcode 1), as the apps do when a record is edited.
+
+        ``time`` (aware) is when the record happened, or started for a sleep, a nursing, or a
+        pump; a sleep's or nursing's length is kept, so its end moves too. ``timezone_offset``
+        changes the record's zone, which is otherwise kept. ``note`` replaces the note ("" to
+        clear it). The update carries the record as last saved with only those keys,
+        ``newFlage`` false, and ``timestamp`` changed, and the timestamp is set as for
+        ``add_pictures``. Returns the record as updated. When nothing would change, the record
+        is returned as it is and nothing is posted, so a retry after a write that landed is
+        safe.
+
+        It edits a baby's record or a pump. Refused before any request: ``ValueError`` for
+        nothing to change or a bad value, ``RecordNotFoundError`` for a record never seen or
+        deleted, and ``WrongRecordTypeError`` for a baby, a pick-list entry, or a record of a
+        type the library doesn't know. ``object_id`` can be in either case. The ``edit_*`` methods
+        for each record type also change a record's own fields.
+        """
+        edit = Edit(common_changes(time=time, timezone_offset=timezone_offset, note=note))
+        return await self._edit(target, object_id, lambda record: edit)
+
+    async def edit_diaper(
+        self,
+        target: WriteTarget,
+        object_id: str,
+        *,
+        status: int | None = None,
+        amount: int | None = None,
+        time: datetime | None = None,
+        timezone_offset: int | None = None,
+        note: str | None = None,
+    ) -> Diaper:
+        """Change a saved diaper: its ``status`` (one of ``DIAPER_STATUSES``), its ``amount``
+        (one of ``DIAPER_AMOUNTS``), and its time, zone, and note as for ``edit_record``, whose
+        rules it shares. Give at least one. With no ``amount``, a change to dry sets the amount
+        to none and a change to wet sets it to normal, as the Android app's screen does. A
+        record that isn't a diaper raises ``WrongRecordTypeError``.
+        """
+        common = common_changes(
+            time=time, timezone_offset=timezone_offset, note=note, required=False
+        )
+        edit = Edit(_some({**diaper_changes(status, amount), **common}))
+        record = await self._edit(target, object_id, lambda record: edit, Diaper)
+        assert isinstance(record, Diaper)
+        return record
+
+    async def edit_bottle(
+        self,
+        target: WriteTarget,
+        object_id: str,
+        *,
+        volume: Volume | None = None,
+        time: datetime | None = None,
+        timezone_offset: int | None = None,
+        note: str | None = None,
+    ) -> Formula | Pumped:
+        """Change a saved formula or pumped-milk bottle: its ``volume`` (more than zero, as for
+        ``add_formula``), and its time, zone, and note as for ``edit_record``, whose rules it
+        shares. Give at least one. Formula can't become pumped milk or the reverse: they are
+        different record types, so delete the bottle and add the other. A record that isn't a
+        bottle raises ``WrongRecordTypeError``.
+        """
+        common = common_changes(
+            time=time, timezone_offset=timezone_offset, note=note, required=False
+        )
+        edit = Edit(_some({**bottle_changes(volume), **common}))
+        record = await self._edit(target, object_id, lambda record: edit, Formula, Pumped)
+        assert isinstance(record, Formula | Pumped)
+        return record
+
+    async def edit_nursing(
+        self,
+        target: WriteTarget,
+        object_id: str,
+        *,
+        left_minutes: int | None = None,
+        right_minutes: int | None = None,
+        finish_side: int | None = None,
+        time: datetime | None = None,
+        timezone_offset: int | None = None,
+        note: str | None = None,
+    ) -> Nursing:
+        """Change a saved nursing: the minutes on a side (a side not given keeps its own), the
+        side it is recorded under, and its time, zone, and note as for ``edit_record``, whose
+        rules it shares. Give at least one. ``time`` is the start.
+
+        The checks are ``add_nursing``'s: whole minutes, at most ``MAX_MINUTES_PER_SIDE`` a
+        side, and at least a minute in all. When the minutes change, the keys an iPhone's timer
+        left on the record are dropped, as the iPhone app drops them. The minutes of an
+        Android timer's ``NursingSession`` can't be changed (``WrongRecordTypeError``): it
+        carries the timer's own timestamps, and how the app edits one hasn't been seen. Its
+        time, zone, and note can.
+        """
+        common = common_changes(
+            time=time, timezone_offset=timezone_offset, note=note, required=False
+        )
+
+        def changes(record: Record) -> Edit:
+            assert isinstance(record, Nursing)
+            own = nursing_edit(
+                record,
+                left_minutes=left_minutes,
+                right_minutes=right_minutes,
+                finish_side=finish_side,
+            )
+            if own.drop and isinstance(record, NursingSession):
+                raise WrongRecordTypeError(
+                    f"record {record.object_id} is a NursingSession, whose minutes come from "
+                    "its timer and can't be edited"
+                )
+            return Edit(_some({**own.set, **common}), own.drop)
+
+        record = await self._edit(target, object_id, changes, Nursing)
+        assert isinstance(record, Nursing)
+        return record
+
+    async def edit_sleep(
+        self,
+        target: WriteTarget,
+        object_id: str,
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        timezone_offset: int | None = None,
+        note: str | None = None,
+    ) -> Sleep:
+        """Change a saved sleep: its ``start`` and ``end`` (aware), and its zone and note as for
+        ``edit_record``, whose rules it shares. Give at least one.
+
+        The one not given is kept, so a new ``start`` keeps the saved end and the sleep gets
+        longer or shorter; ``edit_record`` with a ``time`` moves the whole sleep instead. A
+        running sleep stays running when only its start moves, and an ``end`` finishes it. The
+        checks are ``add_sleep``'s: the end after the start, at most 24 hours, and the length
+        in whole minutes, rounded half up and at least 1.
+        """
+        common = common_changes(
+            time=None, timezone_offset=timezone_offset, note=note, required=False
+        )
+
+        def changes(record: Record) -> Edit:
+            assert isinstance(record, Sleep)
+            return Edit(_some({**sleep_changes(record, start=start, end=end), **common}))
+
+        record = await self._edit(target, object_id, changes, Sleep)
+        assert isinstance(record, Sleep)
+        return record
+
+    async def edit_temperature(
+        self,
+        target: WriteTarget,
+        object_id: str,
+        *,
+        temperature: Measurement | None = None,
+        time: datetime | None = None,
+        timezone_offset: int | None = None,
+        note: str | None = None,
+    ) -> Temperature:
+        """Change a saved temperature: its reading (``Measurement(value, "F")`` or
+        ``Measurement(value, "C")``, checked as for ``add_temperature``), and its time, zone,
+        and note as for ``edit_record``, whose rules it shares. Give at least one.
+        """
+        common = common_changes(
+            time=time, timezone_offset=timezone_offset, note=note, required=False
+        )
+        edit = Edit(_some({**temperature_changes(temperature), **common}))
+        record = await self._edit(target, object_id, lambda record: edit, Temperature)
+        assert isinstance(record, Temperature)
+        return record
+
+    async def edit_growth(
+        self,
+        target: WriteTarget,
+        object_id: str,
+        *,
+        weight: Measurement | None = None,
+        length: Measurement | None = None,
+        head: Measurement | None = None,
+        time: datetime | None = None,
+        timezone_offset: int | None = None,
+        note: str | None = None,
+    ) -> Growth:
+        """Change a saved growth record: any of its ``weight``, ``length``, and ``head``
+        (each checked as for ``add_growth``), and its time, zone, and note as for
+        ``edit_record``, whose rules it shares. Give at least one. A measurement not given is
+        kept, and one can't be removed. A new length or head must be in the unit of the other,
+        given or saved.
+        """
+        common = common_changes(
+            time=time, timezone_offset=timezone_offset, note=note, required=False
+        )
+
+        def changes(record: Record) -> Edit:
+            assert isinstance(record, Growth)
+            own = growth_changes(record, weight=weight, length=length, head=head)
+            return Edit(_some({**own, **common}))
+
+        record = await self._edit(target, object_id, changes, Growth)
+        assert isinstance(record, Growth)
+        return record
+
+    async def edit_medication(
+        self,
+        target: WriteTarget,
+        object_id: str,
+        *,
+        amount: float | None = None,
+        time: datetime | None = None,
+        timezone_offset: int | None = None,
+        note: str | None = None,
+    ) -> Medication:
+        """Change a saved dose: its ``amount`` (more than zero, as for ``add_medication``),
+        and its time, zone, and note as for ``edit_record``, whose rules it shares. Give at
+        least one. The medicine itself can't be changed: delete the dose and add another.
+        """
+        common = common_changes(
+            time=time, timezone_offset=timezone_offset, note=note, required=False
+        )
+        edit = Edit(_some({**medication_changes(amount), **common}))
+        record = await self._edit(target, object_id, lambda record: edit, Medication)
+        assert isinstance(record, Medication)
+        return record
+
+    async def edit_other_feed(
+        self,
+        target: WriteTarget,
+        object_id: str,
+        *,
+        amount: float | None = None,
+        unit: str | None = None,
+        time: datetime | None = None,
+        timezone_offset: int | None = None,
+        note: str | None = None,
+    ) -> OtherFeed:
+        """Change a saved solid food: its ``amount`` and ``unit`` (checked as for
+        ``add_other_feed``), and its time, zone, and note as for ``edit_record``, whose rules
+        it shares. Give at least one. The food and the meal can't be changed: delete the
+        record and add another.
+        """
+        common = common_changes(
+            time=time, timezone_offset=timezone_offset, note=note, required=False
+        )
+        edit = Edit(_some({**other_feed_changes(amount, unit), **common}))
+        record = await self._edit(target, object_id, lambda record: edit, OtherFeed)
+        assert isinstance(record, OtherFeed)
+        return record
+
+    async def edit_activity(
+        self,
+        target: WriteTarget,
+        object_id: str,
+        *,
+        duration: int | None = None,
+        time: datetime | None = None,
+        timezone_offset: int | None = None,
+        note: str | None = None,
+    ) -> OtherActivity:
+        """Change a saved activity: its ``duration`` (whole minutes, as for
+        ``add_activity``), and its time, zone, and note as for ``edit_record``, whose rules it
+        shares. Give at least one. The activity type can't be changed: delete the record and
+        add another.
+        """
+        common = common_changes(
+            time=time, timezone_offset=timezone_offset, note=note, required=False
+        )
+        edit = Edit(_some({**activity_changes(duration), **common}))
+        record = await self._edit(target, object_id, lambda record: edit, OtherActivity)
+        assert isinstance(record, OtherActivity)
+        return record
+
+    async def edit_pump(
+        self,
+        target: WriteTarget,
+        object_id: str,
+        *,
+        amount: Volume | None = None,
+        left_volume: Volume | None = None,
+        right_volume: Volume | None = None,
+        left_minutes: int | None = None,
+        right_minutes: int | None = None,
+        finish_side: int | None = None,
+        time: datetime | None = None,
+        timezone_offset: int | None = None,
+        note: str | None = None,
+    ) -> Pump:
+        """Change a saved pump: its volumes, the minutes on a side, the side it is recorded
+        under, and its time, zone, and note as for ``edit_record``, whose rules it shares. Give
+        at least one. ``time`` is the start.
+
+        Give the total as ``amount``, or the volume of one or both sides, not both, as for
+        ``add_pump``. A new total drops the per-side volumes. With a side volume, the other
+        side keeps its saved volume (0 when it has none), both must be in one unit, and the
+        total becomes their sum. Minutes and the side not given are kept, and the pump must
+        still have a volume or a length.
+        """
+        common = common_changes(
+            time=time, timezone_offset=timezone_offset, note=note, required=False
+        )
+
+        def changes(record: Record) -> Edit:
+            assert isinstance(record, Pump)
+            own = pump_edit(
+                record,
+                amount=amount,
+                left_volume=left_volume,
+                right_volume=right_volume,
+                left_minutes=left_minutes,
+                right_minutes=right_minutes,
+                finish_side=finish_side,
+            )
+            return Edit(_some({**own.set, **common}), own.drop)
+
+        record = await self._edit(target, object_id, changes, Pump)
+        assert isinstance(record, Pump)
+        return record
+
+    async def add_baby(
+        self,
+        target: WriteTarget,
+        name: str,
+        *,
+        birth: datetime,
+        boy: bool,
+        due: datetime | None = None,
+        photo: bytes | None = None,
+        landscape_photo: bytes | None = None,
+        object_id: str | None = None,
+    ) -> Baby:
+        """Add a baby to the account, and apply it locally.
+
+        The app's new-baby screen asks for a ``name``, a ``birth`` date (aware), and whether it
+        is a ``boy``; ``due`` and ``photo`` are optional. It posts a ``Baby`` record, and the
+        returned baby's ``object_id`` is the ``baby_id`` for its records. A ``photo`` (JPEG
+        bytes) is uploaded first, as for ``edit_baby``.
+
+        A name another baby on the account has (ignoring case) raises ``SelectionExistsError``
+        with that baby's ID: the apps treat two babies of one name as a conflict and merge them.
+        Bad input raises ``ValueError``. Both happen before any request. ``object_id`` works as
+        for ``add_diaper``, and a retry of an add that landed uploads nothing again.
+        """
+        picture = check_jpeg(photo, "a baby's photo") if photo is not None else None
+        landscape = (
+            check_jpeg(landscape_photo, "a baby's landscape photo")
+            if landscape_photo is not None
+            else picture
+        )
+        if landscape_photo is not None and picture is None:
+            raise ValueError("give a photo with its landscape_photo")
+        picture_name = str(uuid.uuid4()).upper() if picture is not None else None
+
+        def resolve() -> Draft[Baby]:
+            draft = draft_baby(name, birth=birth, boy=boy, due=due, picture_name=picture_name)
+            wanted = name.strip().casefold()
+            for baby_id, baby in self.babies().items():
+                is_retry = (
+                    object_id is not None and self._resolve_id(object_id, (baby_id,)) is not None
+                )
+                same_name = isinstance(baby.name, str) and baby.name.strip().casefold() == wanted
+                if same_name and not is_retry:
+                    raise SelectionExistsError("baby", name.strip(), baby_id)
+            return draft
+
+        self._check_can_write(target)
+        resolve()
+        if object_id is not None:
+            held = self._resolve_id(object_id, self._created)
+            existing = self._records.get(held) if held is not None else None
+            if isinstance(existing, Baby):
+                return existing  # an earlier attempt of this add landed
+        if picture is not None and landscape is not None:
+            await target.upload_picture(f"{picture_name}.jpg", picture)
+            await target.upload_picture(f"{picture_name}_l.jpg", landscape)
+        return await self._add(target, None, resolve, object_id)
+
+    async def edit_baby(
+        self,
+        target: WriteTarget,
+        baby_id: str,
+        *,
+        name: str | None = None,
+        birth: datetime | None = None,
+        due: datetime | None = None,
+        boy: bool | None = None,
+        photo: bytes | None = None,
+        landscape_photo: bytes | None = None,
+    ) -> Baby:
+        """Change a baby: its ``name``, ``birth`` and ``due`` dates (aware), whether it is a
+        ``boy``, and its ``photo``. Give at least one. It posts an update (opcode 1) of the
+        ``Baby`` record, as the iPhone app does: the baby as last saved with only the edited
+        keys, ``newFlage`` false, and ``timestamp`` changed, as for ``edit_record``.
+
+        ``photo`` is the bytes of a JPEG. It is uploaded first, under a new uppercase UUID plus
+        ".jpg" and again plus "_l.jpg" (the landscape copy, ``landscape_photo`` when given, else
+        the same photo, as the iPhone app uploads it), and the baby's ``pictureName`` becomes
+        that UUID. The old photo's files stay on the service.
+
+        Returns the baby as updated; records added afterwards embed it. Without a photo,
+        nothing is posted when the baby already has the values. Refused before any request:
+        ``ValueError`` for nothing to change or a bad value, ``UnknownBabyError`` for a baby
+        never seen, and ``RecordNotFoundError`` for a baby that was deleted, or whose own
+        record hasn't synced (only the copies its records carry, which may be partial).
+        """
+        picture = check_jpeg(photo, "a baby's photo") if photo is not None else None
+        landscape = (
+            check_jpeg(landscape_photo, "a baby's landscape photo")
+            if landscape_photo is not None
+            else picture
+        )
+        if landscape_photo is not None and picture is None:
+            raise ValueError("give a photo with its landscape_photo")
+
+        def changes(baby: Baby) -> Edit:
+            given = baby_changes(baby, name=name, birth=birth, due=due, boy=boy)
+            if not given and picture is None:
+                raise ValueError("give something to change")
+            return Edit(given)
+
+        async with self._lock:
+            self._check_can_write(target)
+            baby_id = self._resolve_id(baby_id, self._records, self._tombstones) or baby_id
+            baby = self._saved_baby(baby_id)
+            if picture is None and changes(baby).already_in(baby.to_payload()):
+                return baby
+            # Every device's log: the update carries the whole baby as last saved.
+            await self._catch_up(target)
+            number = await self._prepare(target)
+            baby = self._saved_baby(baby_id)
+            edit = changes(baby)
+            if picture is None and edit.already_in(baby.to_payload()):
+                return baby
+            if picture is not None and landscape is not None:
+                picture_name = str(uuid.uuid4()).upper()
+                await target.upload_picture(f"{picture_name}.jpg", picture)
+                await target.upload_picture(f"{picture_name}_l.jpg", landscape)
+                edit = Edit({**edit.set, "pictureName": picture_name})
+            updated = decode_payload(edited_payload(baby, edit, _update_stamp(baby)))
+            assert isinstance(updated, Baby)
+            await self._send(target, number, OP_UPDATE, encode_transaction(updated))
+            return updated
+
+    def _saved_baby(self, baby_id: str) -> Baby:
+        """The baby's own record, or raise why it can't be edited."""
+        record = self._records.get(baby_id)
+        if isinstance(record, Baby):
+            return record
+        if baby_id in self._tombstones:
+            raise RecordNotFoundError(f"baby {baby_id} was deleted")
+        if record is not None or baby_id not in self.babies():
+            raise UnknownBabyError(f"no baby {baby_id} is known from sync")
+        raise RecordNotFoundError(
+            f"baby {baby_id}'s own record hasn't synced, only the copies its records carry"
+        )
+
+    async def _edit(
+        self,
+        target: WriteTarget,
+        object_id: str,
+        changes_for: Callable[[Record], Edit],
+        *kinds: type[Record],
+    ) -> Record:
+        """The shared path of an edit: check, catch up, and post the record as last saved with
+        the edit applied. ``changes_for`` gives the edit for the saved record and raises for bad
+        input; ``kinds`` are the record types it applies to (any baby's record or pump when
+        empty). Nothing is posted when the record already has the edit."""
+        async with self._lock:
+            self._check_can_write(target)
+            object_id = self._resolve_id(object_id, self._records, self._tombstones) or object_id
+            record = self._editable(object_id, kinds)
+            if changes_for(record).already_in(record.to_payload()):
+                return record
+            # Every device's log, not just this one's: the update carries the whole record, so
+            # it must hold whatever another device saved since the last sync.
+            await self._catch_up(target)
+            number = await self._prepare(target)
+            record = self._editable(object_id, kinds)  # as last saved, after the catch-up
+            edit = changes_for(record)
+            if edit.already_in(record.to_payload()):
+                return record
+            updated = decode_payload(edited_payload(record, edit, _update_stamp(record)))
+            await self._send(target, number, OP_UPDATE, encode_transaction(updated))
+            return updated
+
+    def _editable(self, object_id: str, kinds: tuple[type[Record], ...] = ()) -> Record:
+        """The record ``object_id`` names, or raise why it can't be edited: one of ``kinds``, or
+        any baby's record or pump when there are none."""
+        wanted = " or ".join(kind.object_type for kind in kinds) or "baby's record or a pump"
+        if object_id in self.babies():
+            raise WrongRecordTypeError(f"record {object_id} is a Baby, not a {wanted}")
+        record = self._saved_record(object_id)
+        if kinds:
+            refused = not isinstance(record, kinds)
+        else:
+            refused = isinstance(record, _NOT_DELETABLE_FROM_OTHERS)
+        if refused:
+            raise WrongRecordTypeError(
+                f"record {object_id} is a {record.record_type or 'record'}, not a {wanted}"
+            )
+        return record
+
+    async def rename_entry(self, target: WriteTarget, object_id: str, name: str) -> Record:
+        """Rename a pick-list entry (a food, a medicine, a milestone, a vaccine, or an activity
+        type), whichever device added it: post an update (opcode 1) of the entry's own record
+        with only ``name``, ``newFlage`` false, and ``timestamp`` changed, as for
+        ``edit_record``.
+
+        The entry must have a record of its own: one added in an app since the account's seed,
+        or with an ``add_*`` method here. A built-in entry, and one known only from the copies
+        records embed, has none (``RecordNotFoundError``). ``name`` is written without
+        surrounding spaces, at most ``MAX_PICK_LIST_NAME_LENGTH`` characters. A name another
+        entry of the same list has (ignoring case) raises ``SelectionExistsError``. Records
+        that already name the entry keep the copy they embed, with the old name; the apps show
+        the entry's current name.
+        """
+        written = _checked_entry_name(name, "pick-list entry")
+
+        def changes(record: Record) -> Edit:
+            what, choices = self._entry_list(record)
+            for choice in choices:
+                same = self._resolve_id(choice.object_id, (record.object_id,)) is not None
+                if choice.name.strip().casefold() == written.casefold() and not same:
+                    raise SelectionExistsError(what, written, choice.object_id)
+            return Edit({"name": written})
+
+        return await self._edit(target, object_id, changes, *_PICK_LIST_TYPES)
+
+    async def remove_pictures(
+        self, target: WriteTarget, object_id: str, pictures: Sequence[str] | None = None
+    ) -> Joy | Milestone | OtherActivity:
+        """Remove photos from a joy, milestone, or activity, whichever device made it: post an
+        update (opcode 1) in which each removed photo's ``pictureNote`` entry is marked
+        ``deleted``, as the Android app marks one and saves the record.
+
+        ``pictures`` names the photos by ``Picture.object_id`` (or ``file_name``); ``None``
+        removes every one. The entries stay in the record, so ``record.pictures`` stops listing
+        them and the other devices stop showing them. The files stay on the service, which has
+        no way to delete one. The update is built and timed as for ``edit_record``, and nothing
+        is posted when there is nothing left to remove.
+
+        Refused before any request: ``ValueError`` for a photo the record doesn't have (or an
+        empty list), ``RecordNotFoundError`` for a record never seen or deleted, and
+        ``WrongRecordTypeError`` for any other record type. ``object_id`` can be in either case.
+        """
+        if pictures is not None and (
+            isinstance(pictures, str | bytes) or not isinstance(pictures, Sequence) or not pictures
+        ):
+            raise ValueError("pictures must be a list of picture IDs, or None for every picture")
+        record = await self._edit(
+            target,
+            object_id,
+            lambda record: removed_pictures(record, pictures),
+            Joy,
+            Milestone,
+            OtherActivity,
+        )
+        assert isinstance(record, Joy | Milestone | OtherActivity)
+        return record
+
     def _picturable(self, object_id: str) -> Joy | Milestone | OtherActivity:
         """The joy, milestone, or activity ``object_id`` names, or raise why photos can't be
         added to it."""
@@ -520,7 +1136,7 @@ class SyncEngine:
         and the ID must be passed instead. The record embeds that milestone as the app does. An
         empty or non-text ``milestone`` raises ``InvalidSelectionNameError``, an unknown one
         ``UnknownMilestoneError``, and no baby ``UnknownBabyError``, all before any request;
-        adding a new milestone to the pick list isn't supported yet. ``pictures`` work as for
+        ``add_milestone_type`` adds a new milestone to the pick list. ``pictures`` work as for
         ``add_activity``, and the other arguments as for ``add_diaper``.
         """
         self._check_baby(target, baby_id)
@@ -533,6 +1149,68 @@ class SyncEngine:
 
         resolve()  # a bad name or an unknown or ambiguous milestone fails before the lock
         return await self._add(target, baby_id, resolve, object_id, pictures=pictures)
+
+    async def add_milestone_type(
+        self, target: WriteTarget, name: str, *, object_id: str | None = None
+    ) -> MilestoneSelection:
+        """Add a milestone to the account's pick list, for every baby, and apply it locally.
+
+        It is posted as its own ``MilestoneSelection``, as the apps post a new food or medicine
+        before the first record that names it, so mark it reached with ``add_milestone`` and
+        the returned record's ``object_id``. ``name`` is written without surrounding spaces, at
+        most ``MAX_PICK_LIST_NAME_LENGTH`` characters. A name already on the list for any baby
+        (ignoring case, built-in or not) raises ``SelectionExistsError`` with that milestone's
+        ID, and a bad name ``ValueError``, before any request. ``object_id`` works as for
+        ``add_diaper``.
+        """
+
+        def resolve() -> Draft[MilestoneSelection]:
+            draft = draft_milestone_type(name)
+            self._refuse_taken_name("milestone", name, self.milestone_choices(), object_id)
+            return draft
+
+        resolve()
+        return await self._add(target, None, resolve, object_id)
+
+    async def add_vaccine_type(
+        self,
+        target: WriteTarget,
+        name: str,
+        *,
+        description: str = "",
+        object_id: str | None = None,
+    ) -> VaccineSelection:
+        """Add a vaccine to the account's pick list, and apply it locally.
+
+        It is posted as its own ``VaccineSelection``, as for ``add_milestone_type``, so log it
+        given with ``add_vaccine`` and the returned record's ``object_id``. ``name`` (at most
+        ``MAX_PICK_LIST_NAME_LENGTH`` characters) is the short name the list shows, and
+        ``description`` (at most ``MAX_PICK_LIST_DESCRIPTION_LENGTH``) the full one; both are
+        written without surrounding spaces. A name already on the list raises
+        ``SelectionExistsError``, and bad input ``ValueError``, before any request.
+        """
+
+        def resolve() -> Draft[VaccineSelection]:
+            draft = draft_vaccine_type(name, description=description)
+            self._refuse_taken_name("vaccine", name, self.vaccine_choices(), object_id)
+            return draft
+
+        resolve()
+        return await self._add(target, None, resolve, object_id)
+
+    def _refuse_taken_name(
+        self, what: str, name: str, choices: Iterable[SelectionChoice], object_id: str | None
+    ) -> None:
+        """Raise ``SelectionExistsError`` when the pick list already has an entry of that name,
+        ignoring case. A retry names the entry that landed, whatever the case of its id."""
+        wanted = name.strip().casefold()
+        for choice in choices:
+            is_retry = (
+                object_id is not None
+                and self._resolve_id(object_id, (choice.object_id,)) is not None
+            )
+            if choice.name.strip().casefold() == wanted and not is_retry:
+                raise SelectionExistsError(what, name.strip(), choice.object_id)
 
     def milestone_choices(self, baby_id: str | None = None) -> list[SelectionChoice]:
         """Every milestone a record for the baby can name.
@@ -639,8 +1317,8 @@ class SyncEngine:
         for ``add_milestone``. The record embeds it as ``desc``. ``duration`` is whole minutes,
         0 (the default) when it wasn't timed, at most ``MAX_ACTIVITY_MINUTES``. Bad input raises
         the errors ``add_milestone`` does (``UnknownActivityError`` for an unknown type) or
-        ``ValueError`` for a bad duration, before any request; adding a new type to the pick
-        list isn't supported yet. The other arguments work as for ``add_diaper``.
+        ``ValueError`` for a bad duration, before any request; ``add_activity_type`` adds a
+        new type to the pick list. The other arguments work as for ``add_diaper``.
 
         ``pictures`` are photos, each a ``NewPicture(photo, thumbnail)`` of JPEG bytes, as both
         apps attach them when a record is added. ``add_activity``, ``add_milestone``, and
@@ -718,16 +1396,47 @@ class SyncEngine:
         )
         return await self._add(target, baby_id, draft, object_id)
 
+    async def add_activity_type(
+        self, target: WriteTarget, name: str, *, object_id: str | None = None
+    ) -> OtherActivityDescription:
+        """Add an activity type, such as "Bath", to the account's pick list, and apply it
+        locally.
+
+        The type is posted as its own ``OtherActivityDescription``, as the apps post a new food
+        or medicine before the first record that names it, so log an activity with
+        ``add_activity`` and the returned record's ``object_id``. ``name`` is written without
+        surrounding spaces, at most ``MAX_ACTIVITY_TYPE_NAME_LENGTH`` characters. A name already
+        on the list (ignoring case, built-in or not) raises ``SelectionExistsError`` with that
+        type's ID, and a bad name ``ValueError``, before any request. The type belongs to the
+        account, not a baby. ``object_id`` works as for ``add_diaper``.
+        """
+
+        def resolve() -> Draft[OtherActivityDescription]:
+            draft = draft_activity_type(name)
+            wanted = name.strip().casefold()
+            for choice in self.activity_choices():
+                # A retry names the type that landed, whatever the case of its id.
+                is_retry = (
+                    object_id is not None
+                    and self._resolve_id(object_id, (choice.object_id,)) is not None
+                )
+                if choice.name.strip().casefold() == wanted and not is_retry:
+                    raise SelectionExistsError("activity", name.strip(), choice.object_id)
+            return draft
+
+        resolve()
+        return await self._add(target, None, resolve, object_id)
+
     def activity_choices(self) -> list[SelectionChoice]:
         """Every activity type a record can name: the app's built-ins in its order, then added
         ones, by name. Copies are chosen as for ``milestone_choices``. A type added in the app
-        syncs as its own ``OtherActivityDescription`` record (kept raw) and is embedded in each
-        activity of that type.
+        is embedded in each activity of that type, and one synced as its own
+        ``OtherActivityDescription`` record (as ``add_activity_type`` posts it) is offered too.
         """
         synced = [
             r.to_payload()
             for r in self._records.values()
-            if r.record_type == "OtherActivityDescription"
+            if isinstance(r, OtherActivityDescription)
         ]
         embedded = [
             embedded_copy(r, r.desc) for r in self._records.values() if isinstance(r, OtherActivity)
@@ -1248,7 +1957,9 @@ class SyncEngine:
             await target.upload_picture(f"{name}__thumbnail.jpg", photo.thumbnail)
         return names
 
-    async def delete_record(self, target: WriteTarget, object_id: str) -> None:
+    async def delete_record(
+        self, target: WriteTarget, object_id: str, *, any_device: bool = False
+    ) -> None:
         """Post a delete of a record this device created, carrying the full record.
 
         The payload is the record exactly as last saved with ``newFlage`` set to ``"false"``;
@@ -1256,21 +1967,141 @@ class SyncEngine:
         another device created (or one never seen), and ``RecordNotFoundError`` if this
         device's record is already deleted. ``object_id`` matches whatever its case, and the delete
         is posted under the id the record has.
+
+        With ``any_device`` true, a record another device created can be deleted too, as the
+        apps delete each other's records (and this library's), with the same payload. That
+        covers a baby's records, pumps, pick-list entries, and babies. A record of a type the
+        library doesn't know raises ``WrongRecordTypeError``. A record never seen, or already
+        deleted, raises ``RecordNotFoundError``.
+
+        A baby, this device's own or another's, raises ``EntryInUseError`` while any record
+        known from sync belongs to it (``baby_users`` counts them): the apps refuse to delete a
+        baby that still has records and post it back. Delete its records first.
+
+        A pick-list entry another device added (a food, a medicine, a milestone, a vaccine, an
+        activity type) raises ``EntryInUseError`` while any record known from sync still names
+        it: the apps refuse such a delete from another device and post the entry back.
+        ``entry_users`` counts those records. This device's own entry is deleted as before,
+        in use or not.
         """
         async with self._lock:
             self._check_can_write(target)
-            object_id = self._resolve_id(object_id, self._created, self._records) or object_id
+            object_id = (
+                self._resolve_id(object_id, self._created, self._records, self._tombstones)
+                or object_id
+            )
             if object_id not in self._created:
-                raise NotOwnRecordError(f"record {object_id} wasn't created by this device")
-            if object_id not in self._records:
+                if not any_device:
+                    raise NotOwnRecordError(f"record {object_id} wasn't created by this device")
+                self._refuse_entry_in_use(self._deletable(object_id))
+                # Every device's log, not just this one's: the delete carries the whole record,
+                # so it must hold whatever another device saved since the last sync.
+                await self._catch_up(target)
+            elif object_id not in self._records:
                 raise RecordNotFoundError(f"record {object_id} is already deleted")
+            elif isinstance(self._records.get(object_id), Baby):
+                # A baby this device added: refused while it has records, like any other baby,
+                # including records another device added since the last sync.
+                self._refuse_baby_in_use(object_id)
+                await self._catch_up(target)
             number = await self._prepare(target)
-            record = self._records.get(object_id)
+            # The catch-up may have brought in a delete, or another device's newer version.
+            record = (
+                self._records.get(object_id)
+                if object_id in self._created
+                else self._deletable(object_id)
+            )
             if record is None:
                 raise RecordNotFoundError(f"record {object_id} is already deleted")
+            if object_id not in self._created:
+                self._refuse_entry_in_use(record)
+            if isinstance(record, Baby):
+                self._refuse_baby_in_use(object_id)
             payload = record.to_payload()
             payload["newFlage"] = "false"
             await self._send(target, number, OP_DELETE, encode_transaction(decode_payload(payload)))
+
+    def _deletable(self, object_id: str) -> Record:
+        """Another device's record ``object_id`` names, or raise why it can't be deleted."""
+        if object_id in self.babies():
+            # A baby with records can't be deleted, and one known only from the copies its
+            # records carry has records by definition.
+            self._refuse_baby_in_use(object_id)
+        record = self._saved_record(object_id)
+        if isinstance(record, _NOT_DELETABLE_FROM_OTHERS) and not isinstance(
+            record, (*_PICK_LIST_TYPES, Baby)
+        ):
+            raise WrongRecordTypeError(
+                f"record {object_id} is a {record.record_type or 'record'}, which only the "
+                "device that created it can delete"
+            )
+        return record
+
+    def _entry_list(self, entry: Record) -> tuple[str, list[SelectionChoice]]:
+        """The name of the pick list ``entry`` is on, and that list's choices."""
+        if isinstance(entry, MedicationSelection):
+            return "medicine", self.medicine_choices()
+        if isinstance(entry, MilestoneSelection):
+            return "milestone", self.milestone_choices()
+        if isinstance(entry, VaccineSelection):
+            return "vaccine", self.vaccine_choices()
+        if isinstance(entry, OtherFeedSelection):
+            return "food", self.food_choices()
+        return "activity", self.activity_choices()
+
+    def entry_users(self, object_id: str) -> int:
+        """How many records known from sync name the pick-list entry ``object_id``: doses of a
+        medicine, solid foods of a food, and so on. The id matches whatever its case.
+
+        A record names an entry by the copy it embeds, or by the plain ID a seed row keeps when
+        the seed has no entry to embed (``typeID``, ``medID``, ``vaccID``,
+        ``milestoneSelectionID``, an activity's ``descID``). Both count: a real seed had 63
+        solid foods naming a food only that way.
+        """
+        wanted = object_id.upper()
+        count = 0
+        for record in self._records.values():
+            embedded: object = None
+            plain: object = None
+            if isinstance(record, Medication):
+                embedded, plain = record.medication_selection, record.extra.get("medID")
+            elif isinstance(record, Milestone):
+                embedded, plain = record.milestone_type, record.milestone_selection_id
+            elif isinstance(record, Vaccine):
+                embedded, plain = record.vaccine_type, record.vacc_id
+            elif isinstance(record, OtherFeed):
+                embedded, plain = record.feed_type, record.type_id
+            elif isinstance(record, OtherActivity):
+                embedded, plain = record.desc, record.desc_id
+            named = embedded.get("objectID") if isinstance(embedded, Mapping) else None
+            if any(isinstance(i, str) and i.upper() == wanted for i in (named, plain)):
+                count += 1
+        return count
+
+    def baby_users(self, baby_id: str) -> int:
+        """How many records known from sync belong to the baby ``baby_id``. The id matches
+        whatever its case."""
+        wanted = baby_id.upper()
+        return sum(
+            1
+            for record in self._records.values()
+            if not isinstance(record, Baby)
+            and isinstance(record.baby_id, str)
+            and record.baby_id.upper() == wanted
+        )
+
+    def _refuse_baby_in_use(self, baby_id: str) -> None:
+        """Raise ``EntryInUseError`` when the baby still has records."""
+        users = self.baby_users(baby_id)
+        if users:
+            raise EntryInUseError("baby", baby_id, users)
+
+    def _refuse_entry_in_use(self, record: Record | None) -> None:
+        """Raise ``EntryInUseError`` when ``record`` is a pick-list entry records still name."""
+        if isinstance(record, _PICK_LIST_TYPES):
+            users = self.entry_users(record.object_id)
+            if users:
+                raise EntryInUseError(self._entry_list(record)[0], record.object_id, users)
 
     def _check_can_write(self, target: WriteTarget) -> None:
         if self._device_uuid is None:
@@ -1705,6 +2536,13 @@ def _wanted(value: object, what: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise InvalidSelectionNameError(what, value)
     return value
+
+
+def _some(changes: dict[str, Any]) -> dict[str, Any]:
+    """``changes``, or ``ValueError`` when an edit was given nothing to change."""
+    if not changes:
+        raise ValueError("give something to change")
+    return changes
 
 
 def _update_stamp(record: Record) -> datetime:
