@@ -13,6 +13,7 @@ from datetime import datetime
 
 from .models import (
     DIAPER_DIRTY,
+    DIAPER_DRY,
     DIAPER_MIXED,
     DIAPER_WET,
     SIDE_LEFT,
@@ -50,6 +51,8 @@ class DayTotals:
     # right, and both sides at once, added up.
     nursings: int = 0
     nursing_minutes: int = 0
+    # Dry diapers: checked and found dry. Last, so the fields before it keep their places.
+    dry: int = 0
 
 
 def _milliliters(volume: Volume | None) -> float:
@@ -71,7 +74,7 @@ def day_totals(
     known type it couldn't decode) is an ``UnknownRecord`` and matches none of the classes below.
     A bottle with no amount or no known unit is a feed that adds no volume.
     """
-    diapers = wet = dirty = mixed = feeds = nursings = nursing_minutes = 0
+    diapers = wet = dirty = mixed = dry = feeds = nursings = nursing_minutes = 0
     milliliters = 0.0
     for record in records:
         if record.time is None or record.baby_id != baby_id or not start <= record.time < end:
@@ -82,6 +85,7 @@ def day_totals(
             wet += status == DIAPER_WET
             dirty += status == DIAPER_DIRTY
             mixed += status == DIAPER_MIXED
+            dry += status == DIAPER_DRY
         elif isinstance(record, Nursing | Formula | Pumped):
             feeds += 1
             if isinstance(record, Nursing):
@@ -90,7 +94,7 @@ def day_totals(
             else:
                 milliliters += _milliliters(record.volume)
     return DayTotals(
-        diapers, wet, dirty, mixed, feeds, milliliters, start, nursings, nursing_minutes
+        diapers, wet, dirty, mixed, feeds, milliliters, start, nursings, nursing_minutes, dry
     )
 
 
