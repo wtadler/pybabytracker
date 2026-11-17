@@ -12,6 +12,7 @@ from factories import BABY_ID, BABY_TWO_ID, baby_payload, payload_for
 
 from pybabytracker import (
     DIAPER_DIRTY,
+    DIAPER_DRY,
     DIAPER_MIXED,
     DIAPER_WET,
     DayTotals,
@@ -81,6 +82,22 @@ def test_diapers_are_counted_in_total_and_by_kind() -> None:
 def test_a_diaper_of_an_unknown_kind_counts_in_total_only() -> None:
     result = totals(record("Diaper", NOON, status=99))
     assert (result.diapers, result.wet, result.dirty, result.mixed) == (1, 0, 0, 0)
+    assert result.dry == 0
+
+
+def test_a_dry_diaper_is_counted_in_total_and_as_dry() -> None:
+    result = totals(
+        record("Diaper", NOON, status=DIAPER_DRY),
+        record("Diaper", NOON + timedelta(minutes=1), status="3"),  # as Android sends it
+        record("Diaper", NOON + timedelta(minutes=2), status=DIAPER_WET),
+    )
+    assert (result.diapers, result.dry, result.wet) == (3, 2, 1)
+    assert (result.dirty, result.mixed) == (0, 0)
+
+
+def test_dry_is_the_last_field_so_totals_built_by_position_still_mean_the_same() -> None:
+    built = DayTotals(4, 2, 1, 1, 3, 120.0, DAY_START, 2, 25)
+    assert (built.nursings, built.nursing_minutes, built.dry) == (2, 25, 0)
 
 
 def test_nursing_and_bottles_are_feeds() -> None:

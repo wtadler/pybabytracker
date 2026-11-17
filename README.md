@@ -10,6 +10,11 @@ Async Python client for the sync service of
 [Baby Tracker (Nighp) for Home Assistant](https://github.com/wtadler/ha-baby-tracker)
 integration. It is unofficial and identifies itself as `pybabytracker/<version>`.
 
+It reads every record type the apps sync, including the history in the account's seed, and
+writes as a device of its own. It adds records, edits and deletes them whichever device made
+them, adds and removes their photos, and adds, edits, and deletes babies and pick-list entries
+(foods, medicines, milestones, vaccines, and activity types).
+
 ## Use
 
 ```python
@@ -23,7 +28,7 @@ async with aiohttp.ClientSession() as session:
     engine = SyncEngine(device_uuid="STABLE-DEVICE-UUID")  # or SyncEngine.from_dict(saved_state)
     result = await engine.sync(client)  # the first also reads the seed; then only what's new
     diaper = await engine.add_diaper(client, baby_id, DIAPER_WET)  # posts as this device
-    await engine.delete_record(client, diaper.object_id)  # only records this device created
+    await engine.delete_record(client, diaper.object_id)  # another device's: any_device=True
     saved_state = engine.to_dict()  # JSON-safe: save it after writes, and after a sync with
     # result.transactions_applied or result.seed_read
 ```
@@ -50,7 +55,8 @@ async with aiohttp.ClientSession() as session:
   `Nursing`, `Sleep`, `Pump`, `OtherFeed` (solids), `Medication`, `Medicine`, `Temperature`,
   `Growth`, `Milestone`, `Vaccine`, `OtherActivity`, `Bath`, `Allergen`, `Sick`,
   `HealthQuestion`, `DoctorVisit`, `Joy`, `Journal`, and `Baby`, plus the pick lists
-  `MedicationSelection`, `MilestoneSelection`, and `VaccineSelection`. The ones you can add are
+  `MedicationSelection`, `MilestoneSelection`, `VaccineSelection`, `OtherFeedSelection` (foods),
+  and `OtherActivityDescription` (activity types). The ones you can add are
   listed under [Record types you can add](#record-types-you-can-add). A record type the library
   doesn't know stays raw as an `UnknownRecord` (a debug line is logged once per type).
   `Medication` is a medicine dose with the medicine embedded, and `NursingSession`, the Android
@@ -65,7 +71,10 @@ async with aiohttp.ClientSession() as session:
 
 ## Writes
 
-The engine posts as its own device (`device_uuid`, which must match the client's):
+The engine posts as its own device (`device_uuid`, which must match the client's). It can
+[add](#record-types-you-can-add), [edit](#edit-a-record), and [delete](#delete-a-record)
+records, and it does the same for [babies](#babies), [pick-list entries](#pick-list-entries),
+and [pictures](#pictures). Every write shares these rules:
 
 - A write needs a completed sync first (`NotSyncedError` otherwise), because the payload embeds
   the baby record as known from sync (`UnknownBabyError` for a baby it hasn't seen).
@@ -86,9 +95,10 @@ The engine posts as its own device (`device_uuid`, which must match the client's
   (`ProtocolError`) rather than skipping the missing entries.
 - A confirmed write is applied locally at once, so the next sync doesn't fetch it back.
 - Writes and syncs share a lock, so concurrent writes get consecutive numbers.
-- `delete_record` only deletes records this device added (`NotOwnRecordError`), and raises
-  `RecordNotFoundError` if one is already deleted. Like the app, the delete sends the record as
-  last saved with only `newFlage` set to `"false"`; its timestamp is not bumped.
+- An `object_id` matches whatever its case. The Android app writes lowercase UUIDs and the
+  iPhone app uppercase ones, and a record keeps the ID it has, so an edit, an end, or a delete
+  is posted under the stored ID. A new record's ID is written in uppercase. The `baby_id` of an
+  add is matched exactly, so pass it as `babies()` gives it.
 - Save `to_dict()` after every write, including one that raised: a pending post lives only in
   that state. Use one device ID per running process; two processes writing as one device can
   collide on a number while `LastSyncID` lags.
@@ -101,7 +111,7 @@ key.
 
 | Method | Writes | Notes |
 |---|---|---|
-| `add_diaper(client, baby_id, status, ...)` | `Diaper` | `DIAPER_WET`, `DIAPER_DIRTY`, `DIAPER_MIXED` |
+| `add_diaper(client, baby_id, status, amount=None, ...)` | `Diaper` | `DIAPER_WET`, `DIAPER_DIRTY`, `DIAPER_MIXED`, `DIAPER_DRY`; `amount` is one of `DIAPER_AMOUNTS` (none, light, normal, heavy, overflow, not set), by default normal, or none for a dry diaper |
 | `add_formula(client, baby_id, volume=, ...)` | `Formula` | volume more than zero |
 | `add_pumped(client, baby_id, volume=, ...)` | `Pumped` | a bottle of pumped milk |
 | `add_nursing(client, baby_id, left_minutes=, right_minutes=, ...)` | `Nursing` | a finished session |
@@ -111,6 +121,9 @@ key.
 | `add_vaccine(client, baby_id, vaccine, ...)` | `Vaccine` | `vaccine` is a name or ID from `vaccine_choices()` |
 | `add_medication(client, baby_id, medicine, amount=None, ...)` | `Medication` | a dose; `medicine` is a name or ID from `medicine_choices()`, `amount` defaults to its usual dose |
 | `add_activity(client, baby_id, activity, duration=0, ...)` | `OtherActivity` | tummy time, a bath, and so on; `activity` is a name or ID from `activity_choices()` |
+| `add_activity_type(client, name)` | `OtherActivityDescription` | a new activity type for the pick list, such as "Bath"; belongs to the account, so no `baby_id` |
+| `add_milestone_type(client, name)` | `MilestoneSelection` | a new milestone for the pick list, for every baby |
+| `add_vaccine_type(client, name, description="")` | `VaccineSelection` | a new vaccine for the pick list |
 | `add_joy(client, baby_id, note="", pictures=(), ...)` | `Joy` | a moment kept with its note and photos, at least one of the two |
 | `add_growth(client, baby_id, weight=, length=, head=, ...)` | `Growth` | any of the three, each a `Measurement`, rounded to two decimals; weight in decimal `"lb"` (9 lb 4 oz is 9.25) or `"kg"`, length and head in one of `"in"` or `"cm"`; each must be in `GROWTH_RANGES` |
 | `add_temperature(client, baby_id, temperature, ...)` | `Temperature` | `Measurement(value, "F")` or `Measurement(value, "C")`, not converted and rounded to two decimals; must be in `TEMPERATURE_RANGES` |
@@ -126,11 +139,14 @@ key.
   entries `AmbiguousSelectionError` naming their IDs, so pass the ID; all before any request. The three unknown-entry errors share the base
   `UnknownSelectionError` (with `.what`), and a dose with no `amount` for a medicine that has no
   usual dose raises `NoUsualDoseError`.
-  A milestone added for one baby is left out for the others. Adding a new milestone to the pick
-  list isn't supported yet. Vaccines work the same way: the app's 10 built-ins
+  A milestone added for one baby is left out for the others. `add_milestone_type` and
+  `add_vaccine_type` add a new one to the pick list, each posted as a selection of its own in
+  the shape of a new food (expected, not yet seen in synced data for these two). Vaccines work
+  the same way: the app's 10 built-ins
   (`BUILT_IN_VACCINES`) plus synced ones, `vaccine_choices()`, `find_vaccine`, and
-  `UnknownVaccineError`. A medicine has no built-ins: `medicine_choices()` lists the ones doses
-  already carry, and a `Medication` is logged against one by name or ID. `add_medicine` adds
+  `UnknownVaccineError`. A medicine has no built-ins: `medicine_choices()` lists the ones synced
+  as a `MedicationSelection` of their own (added with `add_medicine`, or in an app) and the ones
+  doses already carry, and a `Medication` is logged against one by name or ID. `add_medicine` adds
   one as the iPhone app does (`isPresciption`, the app's spelling, and the interval in
   minutes). A dose embeds an iPhone-shaped medicine (one with `isPresciption`) as the iPhone
   app does: typed, `newFlage` "false", and the 1970 timestamp. Any other shape, such as an
@@ -140,7 +156,9 @@ key.
   like vaccines: the app's 5 built-ins (`BUILT_IN_ACTIVITIES`: Crawling, Cruising, Tummy Time, TV
   Time, Story Time) plus ones added in the app, `activity_choices()`, `find_activity`, and
   `UnknownActivityError`. The app has no bath screen: a bath is an activity of a type added in
-  the app, such as "Bath". An activity's `duration` is whole minutes, 0 when not timed.
+  the app, such as "Bath", or with `add_activity_type` (posted as an `OtherActivityDescription`
+  of its own, in the shape of a new food; that transaction is expected, not yet seen in synced
+  data). An activity's `duration` is whole minutes, 0 when not timed.
 - Foods work like activity types: the app's 9 built-ins (`BUILT_IN_FOODS`: Cereal, Veggies,
   Fruit, Meat, Finger Foods, Vitamins, and the drinks Water, Juice, and Milk) plus ones added in
   the app, `food_choices()`, `find_food`, and `UnknownFoodError`. A solid food's `unit` is free
@@ -160,13 +178,6 @@ key.
   newest record (by its `timestamp`, then its `time`), so a dose's default amount is the usual
   dose of the newest dose. A medicine without a usual dose that is a number above zero needs an
   `amount`. Doses are rounded to 2 decimals, like volumes, in the medicine's own unit.
-- How well this is checked: a built-in milestone ("Back home") and vaccine ("HepB") and a
-  medicine dose were posted on iOS and read back unchanged, and the app showed each as the entry
-  it is. The other built-in IDs, Android, and a custom milestone or vaccine are unverified. A
-  pick-list entry syncing as its own transaction (`MilestoneSelection`, `VaccineSelection`) is an
-  expected shape, not yet seen in synced data; a medicine has been (captured from an iPhone on
-  2026-11-11), and `add_medicine` is verified by that capture only, not run live. A medicine's
-  `interval` is in minutes.
 - Volumes are `Volume(value, "oz")` or `Volume(value, "ml")`, written as a `VolumeMeasure` with
   `englishMeasure` `"true"` (ounces) or `"false"` (milliliters), rounded to 2 decimals (an integer
   when whole). The number is written as given, with no conversion, as the app does.
@@ -195,6 +206,111 @@ key.
   `sides` is written as 0, as captured. Babies are never derived from pumps, and a pump that
   carries a `baby` still decodes (kept raw, not read). `engine.latest_pump()` is the newest pump
   on the account; `latest_records(baby_id)` never includes pumps.
+
+### Edit a record
+
+`edit_record` and the `edit_*` methods change a saved record, whichever device made it, as the
+apps do when a record is edited: an update (opcode 1) carrying the record as last saved with
+only the edited keys, `newFlage` false, and `timestamp` changed.
+
+| Method | Edits | Its own fields |
+|---|---|---|
+| `edit_record(client, object_id, ...)` | any baby's record, or a pump | none: the time, zone, and note only |
+| `edit_diaper(client, object_id, ...)` | `Diaper` | `status`, `amount` |
+| `edit_bottle(client, object_id, ...)` | `Formula` or `Pumped` | `volume` |
+| `edit_nursing(client, object_id, ...)` | `Nursing` | `left_minutes`, `right_minutes`, `finish_side` |
+| `edit_sleep(client, object_id, ...)` | `Sleep` | `start`, `end` |
+| `edit_pump(client, object_id, ...)` | `Pump` | `amount` or `left_volume`/`right_volume`, `left_minutes`, `right_minutes`, `finish_side` |
+| `edit_temperature(client, object_id, ...)` | `Temperature` | `temperature` |
+| `edit_growth(client, object_id, ...)` | `Growth` | `weight`, `length`, `head` |
+| `edit_medication(client, object_id, ...)` | `Medication` | `amount`, `medicine` |
+| `edit_other_feed(client, object_id, ...)` | `OtherFeed` | `amount`, `unit`, `food` |
+| `edit_activity(client, object_id, ...)` | `OtherActivity` | `duration`, `activity` |
+| `edit_milestone(client, object_id, ...)` | `Milestone` | `milestone` |
+| `edit_vaccine(client, object_id, ...)` | `Vaccine` | `vaccine` |
+
+- Every method also takes `time=`, `timezone_offset=`, and `note=` (`edit_sleep` takes `start`
+  for the time), sent in the same update. Give at least one thing to change.
+- Before it posts, an edit reads every device's log, so another device's change since the last
+  sync is kept; one landing between that read and the post is overwritten, as in the app. When
+  the record already has the values nothing is posted, so a retry is safe.
+- Bad input raises `ValueError` before any request, with the checks of the matching `add_*`. A
+  record never seen or deleted raises `RecordNotFoundError`, and a record of another type
+  `WrongRecordTypeError` (for `edit_record`: a baby, a pick-list entry, or a record of a type
+  the library doesn't know).
+- A value not given is kept: a nursing's other side, a growth record's other measurements, and
+  a sleep's end when its `start` moves, so the sleep gets longer or shorter. `edit_record`'s
+  `time` moves a whole sleep or nursing and keeps its length. A running sleep stays running
+  when only its start moves (the new start is checked as `start_sleep` checks one), and an
+  `end` finishes it.
+- When a nursing's minutes change, the keys an iPhone's timer left on it are dropped, as the
+  iPhone app drops them. The minutes of an Android timer's `NursingSession` can't be changed
+  (`WrongRecordTypeError`); its time, zone, and note can.
+- `edit_diaper` with no `amount` sets it to none when the diaper becomes dry and to normal when
+  it becomes wet, as the Android app does.
+- `edit_pump`: a new total drops the per-side volumes. With one side's volume, the other side
+  keeps its own and the total becomes their sum.
+- A `medicine`, `food`, `activity`, `milestone`, or `vaccine` is a name or ID from the matching
+  `*_choices`, embedded in place of the entry the record had as the matching `add_*` embeds one
+  (expected, not yet seen in synced data: no captured edit changes a record's entry). Naming
+  the entry it already has changes nothing.
+- A bottle can't change between formula and pumped milk, and a solid food's meal can't be
+  changed: delete the record and add another.
+- Photos are changed with `add_pictures` and `remove_pictures` (see [Pictures](#pictures)), and
+  a running sleep is ended with `end_sleep` (see [Sleep timers](#sleep-timers)).
+
+### Delete a record
+
+- `delete_record(client, object_id)` deletes a record this device added. A record another
+  device added raises `NotOwnRecordError`, and one already deleted `RecordNotFoundError`. Like
+  the app, the delete sends the record as last saved with only `newFlage` set to `"false"`; its
+  timestamp is not bumped.
+- With `any_device=True` it also deletes a record another device added, as the apps delete each
+  other's records, with the same payload: a baby's records, pumps, pick-list entries, and
+  babies. It reads every device's log first, so the delete carries whatever another device
+  saved since the last sync. A record of a type the library doesn't know raises
+  `WrongRecordTypeError`: only the device that added it can delete it.
+- A baby that still has records raises `EntryInUseError`, whichever device added it
+  (`baby_users(baby_id)` counts them), and so does a pick-list entry another device added while
+  a record still names it (`entry_users(object_id)`). The apps refuse those deletes and post
+  the entry or baby back. This device's own pick-list entry is deleted in use or not.
+
+### Babies
+
+- `engine.babies()` maps each baby's ID to its `Baby`. That ID is the `baby_id` of every add.
+- `add_baby(client, name, birth=, boy=, due=None, photo=None)` adds a baby with a `Baby` record
+  (expected, not yet seen in synced data: only a baby's updates have been). The returned baby's
+  `object_id` is the `baby_id` for its records. A name another baby has raises
+  `SelectionExistsError`, since the apps merge two babies of one name.
+- `edit_baby(client, baby_id, name=, birth=, due=, boy=, photo=)` changes a baby with an update
+  of its `Baby` record, as the iPhone app does. A `photo` (JPEG bytes) is uploaded first as a new
+  uppercase UUID plus ".jpg" and again plus "_l.jpg" (the landscape copy, `landscape_photo` when
+  given), and becomes the baby's `pictureName`. Records added afterwards embed the edited baby.
+  A name another baby has raises `SelectionExistsError`, as for `add_baby`.
+  A baby known only from the copies its records embed raises `RecordNotFoundError`: those can
+  be partial, and after a seed read the baby's own record is there.
+- A baby with no records is deleted with `delete_record` (see
+  [Delete a record](#delete-a-record)). Delete its records first.
+
+### Pick-list entries
+
+A food, a medicine, a milestone, a vaccine, and an activity type are entries of a pick list. A
+record names one by embedding a copy of it. The `*_choices` methods list each list's entries, and
+`add_food`, `add_medicine`, `add_milestone_type`, `add_vaccine_type`, and `add_activity_type`
+add one (see [Record types you can add](#record-types-you-can-add)).
+
+- `entry_of(record)` is the pick-list entry a record names (a dose's medicine, a solid food's
+  food, and so on), looked up by ID in the list's choices. Use it for the entry's current name:
+  it follows a `rename_entry`, and it finds the entry for a seed row that carries only the ID
+  because the seed doesn't hold the entry (such a record has no `food_name` of its own).
+- `rename_entry(client, object_id, name)` renames a food, medicine, milestone, vaccine, or
+  activity type that has a record of its own, with an update of that record (expected, not yet
+  seen in synced data). A built-in entry, and one known only from the copies records embed, has
+  no record of its own (`RecordNotFoundError`). A name another entry of the list has raises
+  `SelectionExistsError`. Records that already name the entry keep the copy they embed, with
+  the old name.
+- `delete_record` deletes an entry: this device's own, or with `any_device=True` another
+  device's that no record names (see [Delete a record](#delete-a-record)).
 
 ### Pictures
 
@@ -226,9 +342,37 @@ key.
   or edit since the last sync is kept; one landing between that read and the post is
   overwritten, as in the app. A deleted or unknown record raises `RecordNotFoundError`; any
   other record (a diaper, a sleep, a baby) `WrongRecordTypeError`.
+- `remove_pictures(client, object_id, pictures=None)` removes photos from a joy, milestone, or
+  activity with an update that marks each one's `pictureNote` entry `deleted`, as the Android
+  app does (expected, not yet seen in synced data). `pictures` names them by
+  `Picture.object_id`; `None` removes all. The files stay on the service.
 - `add_joy(client, baby_id, note=, pictures=)` logs a joy, the app's record for a moment kept
   with a note and photos. It has no fields of its own. A joy with a blank note and no pictures
   raises `ValueError`.
+
+### How well this is checked
+
+- Against the live service, on 2026-11-14, on a test account with no phone in it: one library
+  device posted every add in [Record types you can add](#record-types-you-can-add) and every
+  edit in [Edit a record](#edit-a-record), ran a sleep timer, added and removed photos, and
+  added and edited a baby and pick-list entries. A second library device then edited and
+  deleted what the first had made, including the unused entries and an unused baby. The service
+  took every post, and a device that had never signed in read back the same records with no
+  warnings.
+- On an Android phone: it then joined that account and showed every record. The records it
+  showed named foods, medicines, milestones, vaccines, and activity types the library had
+  added, not the built-in ones.
+- On an iPhone: a built-in milestone ("Back home") and vaccine ("HepB") and a medicine dose
+  were posted and read back unchanged, and the app showed each as the entry it is. An activity
+  with photos and a joy with one, posted on 2026-11-11, showed on an iPhone and an Android
+  phone. The other built-in IDs are unverified, and the 2026-11-14 run wasn't looked at on an
+  iPhone.
+- Against what the apps post: the adds in the iPad capture match it key for key. A pick-list
+  entry syncing as its own transaction (`MilestoneSelection`, `VaccineSelection`) is an
+  expected shape, not yet seen in synced data; a food and a medicine have been (the medicine
+  captured from an iPhone on 2026-11-11). Whatever else this README marks "expected, not yet
+  seen in synced data" is the same: the library posts it and the Android app shows it, but no
+  app's own post of it has been captured. A medicine's `interval` is in minutes.
 
 ### Sleep timers
 
@@ -259,7 +403,8 @@ nursing session is written once, finished, with `add_nursing`.
   posted after it (with a newer timestamp) outlives it, and the sleep stays here as ended. How the
   app shows that case is still to be checked on a test device.
 - An end is an update, not an add: it doesn't make another device's sleep this device's own, so
-  `delete_record` still refuses it. Undo of a sleep this device started works running or ended.
+  `delete_record` still refuses it without `any_device=True`. Undo of a sleep this device
+  started works running or ended.
 
 The service lists a device only after its first post; on the test account, the dev device
 appeared with `LastSyncID` 1 right after its first add, with no confirmation step.
@@ -276,8 +421,10 @@ pump (one length for both sides, never under 1 minute).
 
 ### Day totals and write validation
 
-`day_totals(records, baby_id, start, end)` counts a baby's diapers (by kind), feeds, and bottle
-volume in milliliters from `start` up to `end`. The caller passes the bounds, so a local calendar
+`day_totals(records, baby_id, start, end)` counts a baby's diapers (in total, and wet, dirty,
+mixed, and dry), feeds, nursing sessions and their minutes, and bottle volume in
+milliliters from `start` up to `end`. `last_breast(records, now)` is the newest nursing or pump,
+with its side, as the app shows it before the next session. The caller passes the bounds, so a local calendar
 day, including a 23- or 25-hour day at a clock change, is local midnight to the next local
 midnight. `pybabytracker.validation` has the checks behind a bad request (`check_amount`,
 `check_pump_amounts`, `check_minutes`, `check_sleep_range`, `check_end_after_start`,
